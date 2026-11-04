@@ -3,52 +3,21 @@
 Base URL: `http://127.0.0.1:8765` (override: env `SIMPYLINK_BACKEND_URL`).
 
 ## Endpoints
+- `GET /health` → `200 {"status":"ok","version":"0.1.0"}`
+- `GET /blocks` → `{"blocks":[{"type","label","category","description","inputs","outputs","params":[{"name","type","default","label"}]}]}`
+- `POST /simulate` — one-shot. Request `{"model":{...},"inputs":{...}}` → `{"status":"ok","outputs":{...},"trace":[...]}`. `inputs` values may be numbers or nested lists (vectors).
+- `POST /simulate_time` — fixed-step. Request `{"model":{...},"inputs":{...},"t_start":0.0,"t_stop":1.0,"dt":0.1}` → `{"status":"ok","time":[...],"outputs":{outport_id:[...]}}`. `Inport` inputs may be a scalar (held) or a list of length N.
 
-### GET /health
-`200 {"status": "ok", "version": "0.1.0"}`
-
-### GET /blocks
-List of block definitions for the GUI palette:
-```json
-{"blocks": [{"type": "Gain", "label": "Gain", "description": "...",
-  "inputs": ["in"], "outputs": ["out"],
-  "params": [{"name": "gain", "type": "number", "default": 1.0, "label": "Gain"}]}]}
-```
-
-### POST /simulate
-Request: a model (see below) plus optional `inputs` for `Inport` blocks.
-```json
-{
-  "model": {
-    "name": "sum_example",
-    "blocks": [
-      {"id": "c1", "type": "Constant", "position": {"x": 40, "y": 40}, "params": {"value": 3.0}},
-      {"id": "c2", "type": "Constant", "position": {"x": 40, "y": 140}, "params": {"value": 4.0}},
-      {"id": "s",  "type": "Sum", "position": {"x": 240, "y": 90}, "params": {"inputs": "++"}},
-      {"id": "o",  "type": "Outport", "position": {"x": 420, "y": 90}, "params": {"port": 1}}
-    ],
-    "connections": [
-      {"from": {"block": "c1", "port": "out"}, "to": {"block": "s", "port": "in1"}},
-      {"from": {"block": "c2", "port": "out"}, "to": {"block": "s", "port": "in2"}},
-      {"from": {"block": "s", "port": "out"}, "to": {"block": "o", "port": "in"}}
-    ]
-  },
-  "inputs": {}
-}
-```
-Response:
-```json
-{"outputs": {"o": 7.0}, "trace": [{"block": "s", "output": 7.0}], "status": "ok"}
-```
-Errors: `400 {"error": "...", "detail": "..."}` for invalid model, unknown block, missing input, algebraic loop, divide-by-zero.
+Example: `curl -X POST http://127.0.0.1:8765/simulate -H 'Content-Type: application/json' -d @examples/sum_example.json`
 
 ## Model JSON rules
+- `blocks[].id` unique; `position` is a GUI-only hint, ignored by backend.
+- `connections[].from/to` are `{block, port}`. Multi-input blocks use `in1`, `in2`, … (variable count per `inputs` param for Sum/Product; any `inN` for MinMax/Concat).
+- Signal values: scalar = JSON number; vector/matrix = nested float arrays (numpy float64, column-major for Reshape). Broadcasting: scalar↔vector allowed; incompatible shapes → 400.
+- Contract: `schemas/model.schema.json`. Examples round-trip through `Model.from_dict`→`to_dict` (contract-tested).
 
-- `blocks[].id`: unique non-empty string. `position` is GUI-only hint, ignored by backend.
-- `connections[].from/to`: `{block, port}`. Multi-input blocks use `in1`, `in2`, ... (Sum/Product/Divide in skeleton).
-- Every `Outport` input must be driven; every block input must be connected or have a default.
-- Full machine-readable contract: `schemas/model.schema.json`.
-
-## Versioning
-
-`version` field on model and `/health` response. Bump minor on additive changes, major on breaking. GUI must tolerate unknown block types by showing an error, not crashing.
+## Frozen decisions
+- Errors: always `400 {"error": "<ExceptionClass>", "detail": "..."}` for client errors; `404 {"error":"NotFound",...}` for unknown paths. Malformed JSON → 400, never a traceback.
+- Unknown block type, duplicate block id, duplicate wire into one input, unconnected required input, algebraic loop, divide-by-zero → all 400 with a naming message.
+- Version rule: minor/additive model versions are accepted; a model `version` with a newer major than the backend is rejected (400). GUI tolerates unknown block types by showing the backend error, not crashing.
+- Plugin blocks (docs/plugins.md) appear in `GET /blocks` like built-ins. Broken plugins are skipped at load.

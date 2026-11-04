@@ -1,5 +1,5 @@
 //! HTTP client for the Python backend. GUI never computes block math.
-use crate::model::{BlocksResponse, ErrorResponse, Model, SimulateResponse};
+use crate::model::{BlocksResponse, ErrorResponse, Model, SimulateResponse, TimeSimResponse};
 use serde_json::json;
 
 pub struct ApiClient {
@@ -37,14 +37,22 @@ impl ApiClient {
         Ok(parsed.blocks)
     }
 
-    pub fn simulate(&self, model: &Model) -> Result<SimulateResponse, String> {
-        let body = json!({"model": model, "inputs": {}});
-        let resp = self
-            .client
-            .post(format!("{}/simulate", self.base_url))
+    fn post(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<reqwest::blocking::Response, String> {
+        self.client
+            .post(format!("{}{}", self.base_url, path))
             .json(&body)
             .send()
-            .map_err(|e| format!("backend unreachable ({e})"))?;
+            .map_err(|e| format!("backend unreachable ({e})"))
+    }
+
+    fn parse<T: for<'de> serde::Deserialize<'de>>(
+        &self,
+        resp: reqwest::blocking::Response,
+    ) -> Result<T, String> {
         if resp.status().is_success() {
             resp.json().map_err(|e| e.to_string())
         } else {
@@ -54,5 +62,21 @@ impl ApiClient {
             });
             Err(format!("{}: {}", err.error, err.detail))
         }
+    }
+
+    pub fn simulate(&self, model: &Model) -> Result<SimulateResponse, String> {
+        let body = json!({"model": model, "inputs": {}});
+        self.parse(self.post("/simulate", body)?)
+    }
+
+    pub fn simulate_time(
+        &self,
+        model: &Model,
+        t_stop: f64,
+        dt: f64,
+    ) -> Result<TimeSimResponse, String> {
+        let body =
+            json!({"model": model, "inputs": {}, "t_start": 0.0, "t_stop": t_stop, "dt": dt});
+        self.parse(self.post("/simulate_time", body)?)
     }
 }

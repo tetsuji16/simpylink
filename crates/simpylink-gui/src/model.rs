@@ -56,6 +56,8 @@ pub struct BlockDef {
     pub block_type: String,
     pub label: String,
     #[serde(default)]
+    pub category: String,
+    #[serde(default)]
     pub description: String,
     #[serde(default)]
     pub inputs: Vec<String>,
@@ -82,11 +84,22 @@ pub struct BlocksResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct SimulateResponse {
+    #[allow(dead_code)]
     pub status: String,
     #[serde(default)]
-    pub outputs: HashMap<String, f64>,
+    pub outputs: HashMap<String, serde_json::Value>,
     #[serde(default)]
     pub trace: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TimeSimResponse {
+    #[allow(dead_code)]
+    pub status: String,
+    #[serde(default)]
+    pub time: Vec<f64>,
+    #[serde(default)]
+    pub outputs: HashMap<String, Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Deserialize)]

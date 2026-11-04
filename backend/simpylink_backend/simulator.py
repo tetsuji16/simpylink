@@ -1,15 +1,25 @@
-"""One-shot scalar simulator: topological evaluation of the connection graph."""
+"""One-shot simulator: topological evaluation of the connection graph.
+
+Signals are float (scalar) or numpy arrays. Outputs are converted to
+JSON-serializable values (float / nested lists) via blocks.to_jsonable.
+"""
 from __future__ import annotations
 
+import re
 from collections import defaultdict, deque
 from typing import Any
 
-from .blocks import BLOCK_REGISTRY, BlockError, get_block
+import numpy as np
+
+from .blocks import BlockError, get_block, to_jsonable
 from .model import Model, ModelError
 
 
 class AlgebraicLoopError(ModelError):
     pass
+
+
+_VARIABLE_INPUT_TYPES = {"Sum", "Product", "MinMax", "VectorConcatenate", "MatrixConcatenate"}
 
 
 def _topo_order(model: Model) -> list[str]:
@@ -33,54 +43,78 @@ def _topo_order(model: Model) -> list[str]:
     return order
 
 
-def simulate(model: Model, inputs: dict[str, float] | None = None) -> dict:
-    """Evaluate model. Returns {"outputs": {outport_id: value}, "trace": [...]}."""
+def _valid_target_port(block_type: str, port: str, spec: dict) -> bool:
+    if port in spec["inputs"]:
+        return True
+    if block_type in _VARIABLE_INPUT_TYPES and re.fullmatch(r"in\d+", port):
+        return True
+    return False
+
+
+def _required_inputs(block) -> list[str] | None:
+    """None means: at least one inN connected (checked later)."""
+    if block.type == "Sum":
+        spec_s = str(block.params.get("inputs", "++"))
+        return [f"in{i}" for i in range(1, len(spec_s) + 1)] if spec_s else ["in1", "in2"]
+    if block.type == "Product":
+        spec_s = str(block.params.get("inputs", "**"))
+        return [f"in{i}" for i in range(1, len(spec_s) + 1)] if spec_s else ["in1", "in2"]
+    if block.type in ("MinMax", "VectorConcatenate", "MatrixConcatenate"):
+        return None
+    return None  # caller falls back to spec["inputs"]
+
+
+def simulate(model: Model, inputs: dict | None = None) -> dict:
+    """Evaluate model. Returns {"outputs": {...}, "trace": [...], "status": "ok"}."""
     inputs = inputs or {}
-    # validate block types + ports up front
-    incoming: dict[tuple[str, str], str] = {}  # (dst_block, dst_port) -> src_block
-    wiring: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)  # dst -> port -> (src, sport)
+    block_map = model.block_map()
+    incoming: dict[tuple[str, str], str] = {}
+    wiring: dict[str, dict[str, tuple[str, str]]] = defaultdict(dict)
     for c in model.connections:
-        src_spec = get_block(model.block_map()[c.source.block].type)
-        dst_spec = get_block(model.block_map()[c.target.block].type)
+        src_spec = get_block(block_map[c.source.block].type)
+        dst_spec = get_block(block_map[c.target.block].type)
         if c.source.port not in src_spec["outputs"]:
-            raise BlockError(f"{c.source.block}.{c.source.port} is not an output of {src_spec}")
-        if c.target.port not in dst_spec["inputs"]:
-            raise BlockError(f"{c.target.block}.{c.target.port} is not an input of {dst_spec}")
+            raise BlockError(f"{c.source.block}.{c.source.port} is not an output of {block_map[c.source.block].type}")
+        if not _valid_target_port(block_map[c.target.block].type, c.target.port, dst_spec):
+            raise BlockError(f"{c.target.block}.{c.target.port} is not an input of {block_map[c.target.block].type}")
         if (c.target.block, c.target.port) in incoming:
             raise BlockError(f"input {c.target.block}.{c.target.port} is driven more than once")
         incoming[(c.target.block, c.target.port)] = c.source.block
         wiring[c.target.block][c.target.port] = (c.source.block, c.source.port)
 
-    values: dict[tuple[str, str], float] = {}  # (block, out_port) -> value
-    outputs: dict[str, float] = {}
+    values: dict[tuple[str, str], Any] = {}
+    outputs: dict[str, Any] = {}
     trace: list[dict[str, Any]] = []
 
     for bid in _topo_order(model):
-        block = model.block_map()[bid]
+        block = block_map[bid]
         spec = get_block(block.type)
-        in_vals: dict[str, float] = {}
+        in_vals: dict[str, Any] = {}
         for port, (src_bid, src_port) in wiring.get(bid, {}).items():
             if (src_bid, src_port) not in values:
                 raise BlockError(f"upstream block {src_bid!r} produced no {src_port!r}")
             in_vals[port] = values[(src_bid, src_port)]
         if block.type == "Inport":
-            key = block.id
-            if key not in inputs:
+            if bid not in inputs:
                 raise BlockError(f"Inport {bid!r}: no value in simulate(inputs=...)")
-            out = {"out": float(inputs[key])}
+            v = inputs[bid]
+            out = {"out": np.asarray(v, dtype=np.float64) if isinstance(v, (list, tuple)) else float(v)}
         elif block.type == "Outport":
             if "in" not in in_vals:
                 raise BlockError(f"Outport {bid!r}: input not connected")
-            outputs[bid] = in_vals["in"]
-            trace.append({"block": bid, "output": in_vals["in"]})
+            outputs[bid] = to_jsonable(in_vals["in"])
+            trace.append({"block": bid, "output": to_jsonable(in_vals["in"])})
             continue
         else:
-            for port in spec["inputs"]:
+            required = _required_inputs(block)
+            if required is None:
+                required = list(spec["inputs"])
+            for port in required:
                 if port not in in_vals:
                     raise BlockError(f"{block.type} block {bid!r}: input {port!r} not connected")
             out = spec["eval"](in_vals, block.params)
         for port, v in out.items():
-            values[(bid, port)] = float(v)
-        trace.append({"block": bid, "output": next(iter(out.values()), None)})
+            values[(bid, port)] = v
+        trace.append({"block": bid, "output": to_jsonable(next(iter(out.values()), None))})
 
     return {"status": "ok", "outputs": outputs, "trace": trace}

@@ -1,58 +1,44 @@
 # simpylink
 
 OSS alternative to Simulink (MathWorks). Rust/egui GUI + Python backend.
-Target: latest Simulink behavior (R2026b Math Operations library) for basic arithmetic blocks first; full parity is a roadmap, not a claim.
+Honest status: basic arithmetic parity with Simulink R2026b Math Operations (see `docs/blocks.md`).
+Pixel-level GUI compatibility and full Simulink parity are NOT claimed — see `docs/roadmap.md` and `docs/slx-import-spike.md`.
 
-![status](https://img.shields.io/badge/status-skeleton-yellow) ![license](https://img.shields.io/badge/license-MIT-blue)
+![status](https://img.shields.io/badge/status-v0.1.0-green) ![license](https://img.shields.io/badge/license-MIT-blue)
 
 ## Quick start
-
 ```bash
-# backend (stdlib only, no pip install needed)
-python backend/run.py          # http://127.0.0.1:8765  (GET /health, POST /simulate, GET /blocks)
-
-# in another terminal, smoke test
-curl -X POST http://127.0.0.1:8765/simulate -H 'Content-Type: application/json' \
-  -d @backend/examples/sum_example.json
-
-# GUI
+pip install -e backend
+python backend/run.py          # http://127.0.0.1:8765
+curl -X POST http://127.0.0.1:8765/simulate -H 'Content-Type: application/json' -d @examples/sum_example.json
 cargo run -p simpylink-gui
 ```
-
-Tests: `python -m pytest backend/tests -v` or `python -m unittest discover -s backend/tests -v`
+Full guide: `docs/quickstart.md`. Tests: `python -m unittest discover -s backend/tests -v` and `cargo check --workspace`.
 
 ## Layout
-
 ```
 Cargo.toml                  workspace (crates/simpylink-gui)
-backend/                    Python stdlib HTTP sim backend (no hard deps by design)
-  simpylink_backend/        model.py / blocks.py / simulator.py / server.py
-  tests/  examples/
-crates/simpylink-gui/       egui/eframe GUI: palette, canvas, inspector, API client
-schemas/model.schema.json   model JSON schema (contract GUI <-> backend)
-docs/                       architecture.md / protocol.md / blocks.md / roadmap.md
+backend/                    Python HTTP sim backend (numpy)
+  simpylink_backend/        model.py / blocks.py / simulator.py / time_simulator.py / plugins.py / server.py
+examples/                   runnable example models (+ plugin example)
+crates/simpylink-gui/       egui/eframe GUI: palette, canvas, inspector, dialog, file I/O, results/plot
+schemas/model.schema.json   model JSON contract
+docs/                       architecture / protocol / blocks / quickstart / troubleshooting / plugins / releasing / slx-import-spike
+plugins/                    drop custom block plugins here (git-ignored except .gitkeep)
 ```
 
-## Supported blocks (skeleton MVP)
-
-Sources/sinks: `Constant`, `Inport`, `Outport`
-Arithmetic (scalar, R2026b Math Operations subset): `Gain`, `Sum`, `Product`, `Divide`, `UnaryMinus`, `Abs`, `Bias`
-See `docs/blocks.md` for the full R2026b parity matrix and what is intentionally NOT done yet.
-
-## Design principles
-
-1. Python backend is the source of truth for semantics; GUI never computes block math.
-2. Transport is plain HTTP+JSON on localhost (see `docs/protocol.md`). No gRPC/protobuf in skeleton.
-3. Backend uses stdlib only so CI and contributors need no pip install; numpy comes later (issue #2).
-4. All block semantics get golden tests with hand-computed expected values.
+## Supported blocks
+28 blocks incl. Sources/Sinks plus the R2026b Math Operations arithmetic set (Gain, Sum, Product, Divide, MinMax, Trigonometric/Math/Rounding/Sqrt/Polynomial/…). Vector/matrix signals via numpy. Time-stepped mode with Clock/Sine/Integrator/UnitDelay. See `docs/blocks.md` for the full parity table — ❌ rows are not implemented.
 
 ## Docs
-
-- `docs/architecture.md` — components, data flow, why this split
-- `docs/protocol.md` — HTTP API + model JSON format
-- `docs/blocks.md` — block-by-block parity matrix vs Simulink R2026b
-- `docs/roadmap.md` — phases; remaining work is tracked as GitHub issues
+- `docs/quickstart.md` — zero to running model
+- `docs/architecture.md` — components and data flow
+- `docs/protocol.md` — HTTP API + model JSON (frozen decisions)
+- `docs/blocks.md` — block-by-block parity vs R2026b
+- `docs/plugins.md` — custom blocks
+- `docs/troubleshooting.md` — common failures
+- `docs/releasing.md` — how to cut a release
+- `docs/slx-import-spike.md` — .slx import decision (no-go for production)
 
 ## License
-
 MIT (see LICENSE).

@@ -7,7 +7,7 @@ name = "simpylink-backend"
 version = "0.1.0"
 description = "Python simulation backend for simpylink (Simulink OSS alternative)"
 requires-python = ">=3.10"
-dependencies = []  # stdlib only by design (see docs/architecture.md)
+dependencies = ["numpy>=1.24"]  # vector/matrix signals (see docs/protocol.md)
 
 [tool.setuptools.packages.find]
 include = ["simpylink_backend*"]

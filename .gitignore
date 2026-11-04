@@ -5,3 +5,4 @@ __pycache__/
 *.slx
 *.mdl
 .DS_Store
+plugins/*.py
