@@ -17,6 +17,7 @@ pub struct SimpylinkApp {
     search: String,
     file_path: Option<String>,
     mode: String,
+    dark_theme: bool,
     use_codegen: bool,
     codegen_info: String,
     t_stop: f64,
@@ -106,6 +107,7 @@ impl Default for SimpylinkApp {
             search: String::new(),
             file_path: None,
             mode: "One-shot".into(),
+            dark_theme: false,
             use_codegen: true,
             codegen_info: String::new(),
             t_stop: 1.0,
@@ -176,6 +178,15 @@ impl SimpylinkApp {
 
 impl eframe::App for SimpylinkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        {
+            let mut style = egui::Style::default();
+            if self.dark_theme {
+                style.visuals = egui::Visuals::dark();
+            } else {
+                style.visuals = egui::Visuals::light();
+            }
+            ctx.set_style(style);
+        }
         // keyboard shortcuts
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z)) {
             // plain Ctrl+Z = undo (redo via Ctrl+Shift+Z below)
@@ -298,6 +309,7 @@ impl eframe::App for SimpylinkApp {
                 ui.separator();
                 ui.label(self.file_path.clone().unwrap_or_else(|| "untitled".into()));
                 ui.label(format!("zoom {:.0}%", self.canvas.zoom * 100.0));
+                ui.checkbox(&mut self.dark_theme, "Dark");
             });
             });
         });
