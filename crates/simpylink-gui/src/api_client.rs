@@ -69,6 +69,48 @@ impl ApiClient {
         self.parse(self.post("/simulate", body)?)
     }
 
+
+    pub fn run_codegen(&self, model: &Model, mode: &str, t_stop: f64, dt: f64) -> Result<String, String> {
+        use std::process::Command;
+        let python = std::env::var("SIMPYLINK_PYTHON").unwrap_or_else(|_| "python".into());
+        let backend_dir = std::env::var("SIMPYLINK_BACKEND_DIR").unwrap_or_else(|_| "backend".into());
+        let tmp = std::env::temp_dir().join(format!("simpylink_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).map_err(|e| format!("tempdir: {e}"))?;
+        let model_path = tmp.join("model.json");
+        std::fs::write(&model_path, serde_json::to_string_pretty(model).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let gen_path = tmp.join("model.py");
+        let out = Command::new(&python)
+            .args([
+                "-m",
+                "simpylink_backend.codegen",
+                &model_path.to_string_lossy(),
+                "--output",
+                &gen_path.to_string_lossy(),
+                "--run",
+                "--mode",
+                mode,
+                "--t_stop",
+                &t_stop.to_string(),
+                "--dt",
+                &dt.to_string(),
+            ])
+            .env("PYTHONPATH", &backend_dir)
+            .output()
+            .map_err(|e| format!("failed to spawn {python} ({e}). Set SIMPYLINK_PYTHON / SIMPYLINK_BACKEND_DIR"))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(format!("codegen failed: {err}"));
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        let json_line = stdout.lines().last().unwrap_or("").trim();
+        let v: serde_json::Value = serde_json::from_str(json_line)
+            .map_err(|e| format!("codegen output not JSON ({e}): {stdout}"))?;
+        if v.get("status").and_then(|s| s.as_str()) != Some("ok") {
+            return Err(format!("codegen: {v}"));
+        }
+        Ok(json_line.to_string())
+    }
     pub fn simulate_time(
         &self,
         model: &Model,

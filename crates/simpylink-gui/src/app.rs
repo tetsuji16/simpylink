@@ -17,6 +17,8 @@ pub struct SimpylinkApp {
     search: String,
     file_path: Option<String>,
     mode: String,
+    use_codegen: bool,
+    codegen_info: String,
     t_stop: f64,
     dt: f64,
     dialog_block: Option<String>,
@@ -104,6 +106,8 @@ impl Default for SimpylinkApp {
             search: String::new(),
             file_path: None,
             mode: "One-shot".into(),
+            use_codegen: true,
+            codegen_info: String::new(),
             t_stop: 1.0,
             dt: 0.1,
             dialog_block: None,
@@ -370,10 +374,40 @@ impl eframe::App for SimpylinkApp {
         egui::TopBottomPanel::bottom("bottom").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui.button("▶ Run").clicked() {
-                    if self.mode == "Time-stepped" {
+                    let is_time = self.mode == "Time-stepped";
+                    if self.use_codegen {
+                        match self.api.run_codegen(
+                            &self.model,
+                            if is_time { "time" } else { "oneshot" },
+                            self.t_stop,
+                            self.dt,
+                        ) {
+                            Ok(json_text) => {
+                                if is_time {
+                                    match serde_json::from_str::<TimeSimResponse>(&json_text) {
+                                        Ok(r) => {
+                                            self.status = format!("ok (codegen, time) — {} outputs", r.outputs.len());
+                                            self.time_results = Some(r);
+                                        }
+                                        Err(e) => self.status = format!("codegen parse: {e}"),
+                                    }
+                                } else {
+                                    match serde_json::from_str::<SimulateResponse>(&json_text) {
+                                        Ok(r) => {
+                                            self.status = format!("ok (codegen) — outputs: {:?}", r.outputs);
+                                            self.results = Some(r);
+                                        }
+                                        Err(e) => self.status = format!("codegen parse: {e}"),
+                                    }
+                                }
+                                self.codegen_info = format!("generated model.py in temp dir; stdout: {}", json_text);
+                            }
+                            Err(e) => self.status = format!("codegen error: {e}"),
+                        }
+                    } else if is_time {
                         match self.api.simulate_time(&self.model, self.t_stop, self.dt) {
                             Ok(r) => {
-                                self.status = format!("ok (time) — {} outputs", r.outputs.len());
+                                self.status = format!("ok (http, time) — {} outputs", r.outputs.len());
                                 self.time_results = Some(r);
                             }
                             Err(e) => self.status = format!("error: {e}"),
@@ -381,13 +415,14 @@ impl eframe::App for SimpylinkApp {
                     } else {
                         match self.api.simulate(&self.model) {
                             Ok(r) => {
-                                self.status = format!("ok — outputs: {:?}", r.outputs);
+                                self.status = format!("ok (http) — outputs: {:?}", r.outputs);
                                 self.results = Some(r);
                             }
                             Err(e) => self.status = format!("error: {e}"),
                         }
                     }
                 }
+                ui.checkbox(&mut self.use_codegen, "codegen (no HTTP)");
                 if ui.button("Refresh library").clicked() {
                     match self.api.fetch_blocks() {
                         Ok(p) => {

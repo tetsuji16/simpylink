@@ -289,10 +289,16 @@ if __name__ == "__main__":
     ap.add_argument("model", help="model JSON file")
     ap.add_argument("--output", default="model.py", help="generated python file")
     ap.add_argument("--run", action="store_true", help="execute and print outputs")
+    ap.add_argument("--mode", default="oneshot", choices=["oneshot", "time"])
+    ap.add_argument("--t_stop", type=float, default=1.0)
+    ap.add_argument("--dt", type=float, default=0.1)
     args = ap.parse_args()
     _model = Model.from_dict(json.load(open(args.model)))
-    _code = generate_code(_model)
+    _code = generate_code(_model, mode=args.mode, t_stop=args.t_stop, dt=args.dt)
     open(args.output, "w").write(_code)
-    print(f"wrote {args.output}")
+    if not args.run:
+        print(f"wrote {args.output}")
     if args.run:
-        print(json.dumps(generate_and_run(_model)))
+        import sys as _sys
+        _res = generate_and_run(_model, mode=args.mode, t_stop=args.t_stop, dt=args.dt)
+        print(json.dumps(_res))
