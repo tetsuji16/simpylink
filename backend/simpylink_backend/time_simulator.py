@@ -14,7 +14,32 @@ import numpy as np
 
 from .blocks import BlockError, _num, _to_array, get_block, to_jsonable
 from .model import Model
-from .simulator import _topo_order, _valid_target_port
+from .simulator import AlgebraicLoopError, _valid_target_port
+from collections import defaultdict, deque
+
+
+def _topo_order_time(model):
+    """Topo order where UnitDelay inputs don't constrain order (state breaks the loop)."""
+    indegree = {b.id: 0 for b in model.blocks}
+    adj = defaultdict(list)
+    bmap = model.block_map()
+    for c in model.connections:
+        if bmap[c.target.block].type == "UnitDelay":
+            continue  # UnitDelay output comes from stored state, not this step
+        adj[c.source.block].append(c.target.block)
+        indegree[c.target.block] += 1
+    q = deque(sorted(b for b, d in indegree.items() if d == 0))
+    order = []
+    while q:
+        bid = q.popleft()
+        order.append(bid)
+        for nxt in adj[bid]:
+            indegree[nxt] -= 1
+            if indegree[nxt] == 0:
+                q.append(nxt)
+    if len(order) != len(model.blocks):
+        raise AlgebraicLoopError(f"algebraic loop involving blocks: {sorted(set(indegree) - set(order))}")
+    return order
 from collections import defaultdict
 
 
@@ -45,7 +70,7 @@ def simulate_time(model: Model, t_start: float = 0.0, t_stop: float = 1.0,
         incoming[(c.target.block, c.target.port)] = c.source.block
         wiring[c.target.block][c.target.port] = (c.source.block, c.source.port)
 
-    order = _topo_order(model)
+    order = _topo_order_time(model)
     # per-block state
     integrator_state: dict[str, float] = {}
     delay_state: dict[str, Any] = {}
@@ -57,6 +82,7 @@ def simulate_time(model: Model, t_start: float = 0.0, t_stop: float = 1.0,
             delay_state[bid] = _num(b.params, "initial_condition", 0.0)
 
     series: dict[str, list] = {bid: [] for bid in order if block_map[bid].type == "Outport"}
+    delay_pending: dict[str, Any] = {}
 
     for step, t in enumerate(times):
         values: dict[tuple[str, str], Any] = {}
@@ -66,6 +92,8 @@ def simulate_time(model: Model, t_start: float = 0.0, t_stop: float = 1.0,
             spec = get_block(block.type)
             in_vals: dict[str, Any] = {}
             for port, (src_bid, src_port) in wiring.get(bid, {}).items():
+                if block.type == "UnitDelay":
+                    continue  # input is evaluated later in topo order; state was used this step
                 if (src_bid, src_port) not in values:
                     raise BlockError(f"upstream block {src_bid!r} produced no {src_port!r} at t={t}")
                 in_vals[port] = values[(src_bid, src_port)]
@@ -97,10 +125,8 @@ def simulate_time(model: Model, t_start: float = 0.0, t_stop: float = 1.0,
                     integrator_state[bid] += u * dt
                 out = {"out": float(integrator_state[bid])}
             elif block.type == "UnitDelay":
-                if "in" not in in_vals:
-                    raise BlockError(f"UnitDelay {bid!r}: input not connected")
                 out = {"out": delay_state[bid]}
-                delay_state[bid] = in_vals["in"]
+                # state update deferred to end of step (input may be evaluated later)
             elif block.type == "Outport":
                 if "in" not in in_vals:
                     raise BlockError(f"Outport {bid!r}: input not connected")
@@ -113,6 +139,12 @@ def simulate_time(model: Model, t_start: float = 0.0, t_stop: float = 1.0,
                 out = spec["eval"](in_vals, block.params)
             for port, v in out.items():
                 values[(bid, port)] = v
+        for bid in list(delay_state):
+            w = wiring.get(bid, {})
+            if "in" in w:
+                src_bid, src_port = w["in"]
+                if (src_bid, src_port) in values:
+                    delay_state[bid] = values[(src_bid, src_port)]
         for bid, v in step_outs.items():
             series[bid].append(v)
 

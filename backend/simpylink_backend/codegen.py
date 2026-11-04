@@ -17,6 +17,7 @@ import numpy as np
 from .blocks import BlockError, get_block
 from .model import Model
 from .simulator import _topo_order
+from .time_simulator import _topo_order_time
 
 _TRIG = {"sin": "np.sin", "cos": "np.cos", "tan": "np.tan", "asin": "np.arcsin",
          "acos": "np.arccos", "atan": "np.arctan", "sinh": "np.sinh", "cosh": "np.cosh", "tanh": "np.tanh"}
@@ -147,7 +148,7 @@ def _expr(block, in_vars: dict[str, str]) -> str:
 def generate_code(model: Model, inputs: dict | None = None, mode: str = "oneshot",
                   t_start: float = 0.0, t_stop: float = 1.0, dt: float = 0.1) -> str:
     inputs = inputs or {}
-    order = _topo_order(model)
+    order = _topo_order_time(model) if mode == 'time' else _topo_order(model)
     # wiring: dst block -> port -> (src block, src port)
     wiring: dict[str, dict[str, tuple[str, str]]] = {}
     for c in model.connections:
@@ -166,6 +167,7 @@ def generate_code(model: Model, inputs: dict | None = None, mode: str = "oneshot
     lines.append("    return v")
     lines.append("")
     lines.append("def main():")
+    lines.append("    inputs = INPUTS")
     if mode == "time":
         n = int(round((t_stop - t_start) / dt)) + 1
         lines.append(f"    outputs = {{}}")
@@ -235,7 +237,6 @@ def generate_code(model: Model, inputs: dict | None = None, mode: str = "oneshot
                 inner.append(f"        v_{bid}_out = float(state[{bid!r}])")
             elif block.type == "UnitDelay":
                 inner.append(f"        v_{bid}_out = state[{bid!r}]")
-                inner.append(f"        state[{bid!r}] = {in_vars.get('in', '0.0')}")
             elif block.type == "Inport":
                 inner.append(f"        v_{bid}_out = float(inputs.get({bid!r}, 0.0))")
             elif block.type == "Outport":
@@ -246,6 +247,13 @@ def generate_code(model: Model, inputs: dict | None = None, mode: str = "oneshot
                 except KeyError as e:
                     raise BlockError(f"codegen(time): {block.type} [{bid}] missing input {e}") from e
                 inner.append(f"        v_{bid}_out = {expr}")
+        for bid in order:
+            block = model.block_map()[bid]
+            if block.type == "UnitDelay":
+                w = wiring.get(bid, {})
+                if "in" in w:
+                    src_bid, src_port = w["in"]
+                    inner.append(f"        state[{bid!r}] = v_{src_bid}_{src_port}")
         lines.extend(body)
         lines.extend(inner)
         lines.append("    outputs = out_series")

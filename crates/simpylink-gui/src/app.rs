@@ -221,7 +221,10 @@ impl eframe::App for SimpylinkApp {
         }
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+            ui.vertical(|ui| {
+            ui.label("SIMULATION");
             ui.horizontal(|ui| {
+                ui.label("FILE:");
                 if ui.button("New").clicked() {
                     self.history.push(&self.model);
                     self.model = Model::default();
@@ -267,8 +270,35 @@ impl eframe::App for SimpylinkApp {
                     }
                 }
                 ui.separator();
+                ui.label("SIMULATE:");
+                ui.add(egui::DragValue::new(&mut self.t_stop).prefix("Stop Time (s): "));
+                ui.label("(Run is below)");
+                ui.separator();
+                ui.label("PUBLISH:");
+                {
+                    let pub_resp = ui.button("Publish ▾");
+                    if pub_resp.clicked() {
+                        self.status = "Publish: use Save As for model JSON; Export .py for generated code (no FMU/Protect in this OSS subset)".into();
+                    }
+                    if pub_resp.on_hover_text("Export generated Python / model JSON").clicked() {
+                        // fallthrough to status hint below
+                    }
+                }
+                if ui.button("Export .py").clicked() {
+                    // Reuse codegen run to materialize model.py in temp dir and report its path.
+                    match self.api.run_codegen(&self.model, "oneshot", self.t_stop, self.dt) {
+                        Ok(j) => self.status = format!("exported (codegen run ok): {}", j),
+                        Err(e) => self.status = format!("export failed: {e}"),
+                    }
+                }
+                if ui.button("Library").clicked() {
+                    // focus left panel: clear search to show all
+                    self.search.clear();
+                }
+                ui.separator();
                 ui.label(self.file_path.clone().unwrap_or_else(|| "untitled".into()));
                 ui.label(format!("zoom {:.0}%", self.canvas.zoom * 100.0));
+            });
             });
         });
 
@@ -386,7 +416,10 @@ impl eframe::App for SimpylinkApp {
                                 if is_time {
                                     match serde_json::from_str::<TimeSimResponse>(&json_text) {
                                         Ok(r) => {
-                                            self.status = format!("ok (codegen, time) — {} outputs", r.outputs.len());
+                                            self.status = format!(
+                                                "ok (codegen, time) — {} outputs",
+                                                r.outputs.len()
+                                            );
                                             self.time_results = Some(r);
                                         }
                                         Err(e) => self.status = format!("codegen parse: {e}"),
@@ -394,20 +427,25 @@ impl eframe::App for SimpylinkApp {
                                 } else {
                                     match serde_json::from_str::<SimulateResponse>(&json_text) {
                                         Ok(r) => {
-                                            self.status = format!("ok (codegen) — outputs: {:?}", r.outputs);
+                                            self.status =
+                                                format!("ok (codegen) — outputs: {:?}", r.outputs);
                                             self.results = Some(r);
                                         }
                                         Err(e) => self.status = format!("codegen parse: {e}"),
                                     }
                                 }
-                                self.codegen_info = format!("generated model.py in temp dir; stdout: {}", json_text);
+                                self.codegen_info = format!(
+                                    "generated model.py in temp dir; stdout: {}",
+                                    json_text
+                                );
                             }
                             Err(e) => self.status = format!("codegen error: {e}"),
                         }
                     } else if is_time {
                         match self.api.simulate_time(&self.model, self.t_stop, self.dt) {
                             Ok(r) => {
-                                self.status = format!("ok (http, time) — {} outputs", r.outputs.len());
+                                self.status =
+                                    format!("ok (http, time) — {} outputs", r.outputs.len());
                                 self.time_results = Some(r);
                             }
                             Err(e) => self.status = format!("error: {e}"),
