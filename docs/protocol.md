@@ -1,6 +1,8 @@
 # Protocol — GUI <-> Backend
 
-Base URL: `http://127.0.0.1:8765` (override: env `SIMPYLINK_BACKEND_URL`).
+Two transports, same model JSON:
+1. **Codegen (primary):** `python -m simpylink_backend.codegen model.json --output model.py --run` — generates and executes standalone Python (see `docs/architecture.md`).
+2. **HTTP (optional):** base URL `http://127.0.0.1:8765` (override: env `SIMPYLINK_BACKEND_URL`). Endpoints below; current GUI uses this.
 
 ## Endpoints
 - `GET /health` → `200 {"status":"ok","version":"0.1.0"}`

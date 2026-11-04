@@ -8,17 +8,27 @@
 | `backend/simpylink_backend` | Python 3.10+ stdlib | Model validation, topological evaluation, block math, HTTP server |
 | `schemas/model.schema.json` | JSON Schema | Single contract for model JSON (both sides validate against it) |
 
-## Data flow
+## Execution model (codegen-first)
+
+Primary path — blocking-to-Python-code generation, matching the intended UX
+("connect blocks -> Python code appears -> Run analysis -> visualize"):
 
 ```
-[egui GUI] --POST /simulate (model JSON)--> [Python backend] --{outputs, trace}--> [GUI results panel]
-     ^                                            |
-     |                                            v
-     +---------- GET /blocks (palette) ----- block registry (blocks.py)
+[model JSON] --codegen.py--> model.py (readable numpy source) --subprocess--> outputs.json --> [GUI results / plot]
 ```
 
-GUI spawns/assumes backend at `http://127.0.0.1:8765` (configurable via `SIMPYLINK_BACKEND_URL` env or `--backend` flag).
-GUI must never reimplement block math — if a value is shown, it came from the backend response.
+- `codegen.py` emits standalone `model.py` (needs only numpy, no server).
+- Generated code is committed/debuggable: one line per block, in topological order.
+- `generate_and_run()` executes it in a subprocess; CLI: `python -m simpylink_backend.codegen model.json --output model.py --run`.
+
+Optional transport (kept for the current GUI and remote use):
+`GET /health`, `GET /blocks`, `POST /simulate`, `POST /simulate_time` over
+`http://127.0.0.1:8765`. The GUI currently uses this path; migrating the GUI
+to spawn codegen subprocesses (no listening port) is tracked as a follow-up
+issue. Both paths share block formulas, so results must agree.
+
+GUI must never reimplement block math — if a value is shown, it came from
+executed backend/codegen output.
 
 ## Why Python backend, Rust GUI
 
