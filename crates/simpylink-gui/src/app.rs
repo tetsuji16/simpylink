@@ -1,7 +1,7 @@
 //! Top-level app: palette (left), canvas (center), inspector (right), run/results (bottom).
 use crate::api_client::ApiClient;
 use crate::canvas::{self, CanvasState, History};
-use crate::model::{Block, BlockDef, Model, Position, SimulateResponse, TimeSimResponse};
+use crate::model::{Block, BlockDef, Connection, Model, Position, SimulateResponse, TimeSimResponse};
 use eframe::egui;
 use std::collections::HashMap;
 
@@ -159,22 +159,103 @@ impl SimpylinkApp {
     }
 
     fn open_from(&mut self, path: &std::path::Path) {
-        match std::fs::read_to_string(path) {
-            Ok(text) => match serde_json::from_str::<Model>(&text) {
-                Ok(m) => {
-                    self.history.push(&self.model);
-                    self.model = m;
-                    self.file_path = Some(path.display().to_string());
-                    self.results = None;
-                    self.time_results = None;
-                    self.status = format!("opened {}", path.display());
+            match std::fs::read_to_string(path) {
+                Ok(text) => match serde_json::from_str::<Model>(&text) {
+                    Ok(m) => {
+                        self.history.push(&self.model);
+                        self.model = m;
+                        self.file_path = Some(path.display().to_string());
+                        self.results = None;
+                        self.time_results = None;
+                        self.status = format!("opened {}", path.display());
+                    }
+                    Err(e) => self.status = format!("load failed (invalid model): {e}"),
+                },
+                Err(e) => self.status = format!("open failed: {e}"),
+            }
+        }
+
+        // --- Clipboard / Multi-select helpers ---
+
+        fn selected_block_ids(&self) -> Vec<String> {
+            if !self.canvas.multi_selected.is_empty() {
+                self.canvas.multi_selected.iter().cloned().collect()
+            } else if let Some(id) = self.canvas.selected.clone() {
+                vec![id]
+            } else {
+                vec![]
+            }
+        }
+
+        fn copy_selected(&mut self) {
+            let ids = self.selected_block_ids();
+            if ids.is_empty() { return; }
+            let blocks: Vec<Block> = self.model.blocks.iter().filter(|b| ids.contains(&b.id)).cloned().collect();
+            let conns: Vec<Connection> = self.model.connections.iter()
+                .filter(|c| ids.contains(&c.from.block) && ids.contains(&c.to.block))
+                .cloned().collect();
+            let data = serde_json::json!({ "blocks": blocks, "connections": conns });
+                    if let Ok(text) = serde_json::to_string(&data) {
+                        if let Some(mut clipboard) = arboard::Clipboard::new().ok() {
+                            let _ = clipboard.set_text(text);
+                            self.status = format!("Copied {} block(s)", blocks.len());
+                        }
+                    }
                 }
-                Err(e) => self.status = format!("load failed (invalid model): {e}"),
-            },
-            Err(e) => self.status = format!("open failed: {e}"),
+
+                fn paste_at_cursor(&mut self) {
+                    let text = match arboard::Clipboard::new().ok().and_then(|mut c| c.get_text().ok()) {
+                        Some(t) => t,
+                        None => return,
+                    };
+            let data: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let Some(blocks_val) = data.get("blocks") else { return };
+            let Some(conns_val) = data.get("connections") else { return };
+            let blocks: Vec<Block> = match serde_json::from_value(blocks_val.clone()) {
+                Ok(b) => b,
+                Err(_) => return,
+            };
+            let conns: Vec<Connection> = match serde_json::from_value(conns_val.clone()) {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            if blocks.is_empty() { return; }
+
+            self.history.push(&self.model);
+
+            // Offset pasted blocks slightly from original positions
+            let offset = egui::vec2(20.0, 20.0);
+            let mut id_map = HashMap::new();
+            for mut b in blocks {
+                let old_id = b.id.clone();
+                b.id = canvas::next_id(&mut self.canvas, "blk");
+                b.position.x += offset.x;
+                b.position.y += offset.y;
+                id_map.insert(old_id, b.id.clone());
+                self.model.blocks.push(b);
+            }
+            for mut c in conns {
+                if let (Some(new_from), Some(new_to)) = (id_map.get(&c.from.block), id_map.get(&c.to.block)) {
+                    c.from.block = new_from.clone();
+                    c.to.block = new_to.clone();
+                    self.model.connections.push(c);
+                }
+            }
+            self.status = format!("Pasted {} block(s)", id_map.len());
+        }
+
+        fn duplicate_selected(&mut self) {
+            let ids = self.selected_block_ids();
+            if ids.is_empty() { return; }
+            self.copy_selected();
+            self.paste_at_cursor();
+            // After paste, the new blocks are selected
+            self.status = format!("Duplicated {} block(s)", ids.len());
         }
     }
-}
 
 impl eframe::App for SimpylinkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -188,48 +269,80 @@ impl eframe::App for SimpylinkApp {
             ctx.set_style(style);
         }
         // keyboard shortcuts
-        if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z)) {
-            // plain Ctrl+Z = undo (redo via Ctrl+Shift+Z below)
-            if let Some(m) = self.history.undo() {
-                self.model = m;
-            }
-        }
-        if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Z)) {
-            if let Some(m) = self.history.redo() {
-                self.model = m;
-            }
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::Delete)) && self.canvas.selected.is_some() {
-            self.delete_selected();
-        }
-        // arrow-key nudge
-        let nudge = if ctx.input(|i| i.modifiers.shift) {
-            10.0
-        } else {
-            1.0
-        };
-        let mut dx = 0.0;
-        let mut dy = 0.0;
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
-            dx -= nudge;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
-            dx += nudge;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
-            dy -= nudge;
-        }
-        if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
-            dy += nudge;
-        }
-        if (dx, dy) != (0.0, 0.0) {
-            if let Some(id) = self.canvas.selected.clone() {
-                if let Some(b) = self.model.blocks.iter_mut().find(|b| b.id == id) {
-                    b.position.x += dx;
-                    b.position.y += dy;
+                if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Z)) {
+                    // plain Ctrl+Z = undo (redo via Ctrl+Shift+Z below)
+                    if let Some(m) = self.history.undo() {
+                        self.model = m;
+                    }
                 }
-            }
-        }
+                if ctx.input(|i| i.modifiers.ctrl && i.modifiers.shift && i.key_pressed(egui::Key::Z)) {
+                    if let Some(m) = self.history.redo() {
+                        self.model = m;
+                    }
+                }
+                // Delete for multi-select
+                if ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
+                    if !self.canvas.multi_selected.is_empty() || self.canvas.selected_wire.is_some() {
+                        // canvas handles this
+                    } else if self.canvas.selected.is_some() {
+                        self.delete_selected();
+                    }
+                }
+                // Copy (Ctrl+C) / Paste (Ctrl+V) / Duplicate (Ctrl+D)
+                if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::C)) {
+                    self.copy_selected();
+                }
+                if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::V)) {
+                    self.paste_at_cursor();
+                }
+                if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::D)) {
+                    self.duplicate_selected();
+                }
+                // Select all (Ctrl+A)
+                if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::A)) {
+                    self.canvas.multi_selected = self.model.blocks.iter().map(|b| b.id.clone()).collect();
+                    if let Some(first) = self.canvas.multi_selected.iter().next().cloned() {
+                        self.canvas.selected = Some(first);
+                    }
+                }
+                // arrow-key nudge for multi-select
+                let nudge = if ctx.input(|i| i.modifiers.shift) {
+                    10.0
+                } else {
+                    1.0
+                };
+                let mut dx = 0.0;
+                let mut dy = 0.0;
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                    dx -= nudge;
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                    dx += nudge;
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowUp)) {
+                    dy -= nudge;
+                }
+                if ctx.input(|i| i.key_pressed(egui::Key::ArrowDown)) {
+                    dy += nudge;
+                }
+                if (dx, dy) != (0.0, 0.0) {
+                    let targets: Vec<String> = if !self.canvas.multi_selected.is_empty() {
+                        self.canvas.multi_selected.iter().cloned().collect()
+                    } else if let Some(id) = self.canvas.selected.clone() {
+                        vec![id]
+                    } else {
+                        vec![]
+                    };
+                    for id in targets {
+                        if let Some(b) = self.model.blocks.iter_mut().find(|b| b.id == id) {
+                            b.position.x += dx;
+                            b.position.y += dy;
+                        }
+                    }
+                    if (dx, dy) != (0.0, 0.0) {
+                        self.history.push(&self.model);
+                    }
+                }
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             ui.vertical(|ui| {
@@ -675,9 +788,82 @@ impl eframe::App for SimpylinkApp {
                     self.dialog_block = None;
                 }
             });
-        }
+                    }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+                    // Context menu
+                    if let (Some(pos), Some(target)) = (self.canvas.context_menu_pos, self.canvas.context_menu_target.clone()) {
+                        egui::Area::new(egui::Id::new("context_menu"))
+                            .fixed_pos(pos)
+                            .order(egui::Order::Foreground)
+                            .show(ctx, |ui| {
+                                egui::Frame::menu(ui.style()).show(ui, |ui| {
+                                    ui.set_min_width(180.0);
+                                    match &target {
+                                        canvas::ContextTarget::Block(bid) => {
+                                            if ui.button("✂ Cut").clicked() {
+                                                self.copy_selected();
+                                                self.delete_selected();
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                            if ui.button("📋 Copy").clicked() {
+                                                self.copy_selected();
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                            if ui.button("📄 Duplicate").clicked() {
+                                                self.duplicate_selected();
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                            ui.separator();
+                                            if ui.button("🗑 Delete").clicked() {
+                                                self.delete_selected();
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                            ui.separator();
+                                            if ui.button("⚙ Parameters…").clicked() {
+                                                self.dialog_block = Some(bid.clone());
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                        }
+                                        canvas::ContextTarget::Wire(idx) => {
+                                            if ui.button("🗑 Delete Wire").clicked() {
+                                                if *idx < self.model.connections.len() {
+                                                    self.history.push(&self.model);
+                                                    self.model.connections.remove(*idx);
+                                                }
+                                                self.canvas.context_menu_pos = None;
+                                                self.canvas.selected_wire = None;
+                                            }
+                                        }
+                                        canvas::ContextTarget::Canvas(model_pos) => {
+                                            if ui.button("➕ Add Constant").clicked() {
+                                                let id = canvas::next_id(&mut self.canvas, "blk");
+                                                self.history.push(&self.model);
+                                                self.model.blocks.push(Block {
+                                                    id,
+                                                    block_type: "Constant".into(),
+                                                    position: crate::model::Position {
+                                                        x: model_pos.x - canvas::BLOCK_W / 2.0,
+                                                        y: model_pos.y - canvas::BLOCK_H / 2.0,
+                                                    },
+                                                    params: HashMap::from([("value".to_string(), serde_json::json!(1.0))]),
+                                                });
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                            if ui.button("📋 Paste").clicked() {
+                                                self.paste_at_cursor();
+                                                self.canvas.context_menu_pos = None;
+                                            }
+                                        }
+                                    }
+                                    // Close on click outside
+                                    if ui.input(|i| i.pointer.any_click() && !ui.rect_contains_pointer(ui.max_rect())) {
+                                        self.canvas.context_menu_pos = None;
+                                    }
+                                });
+                            });
+                    }
+
+                    egui::CentralPanel::default().show(ctx, |ui| {
             canvas::draw_canvas(
                 ui,
                 &mut self.model,

@@ -2,7 +2,7 @@
 //! Mutations push undo snapshots via `History`.
 use crate::model::{Block, Connection, Model, PortRef};
 use eframe::egui;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const BLOCK_W: f32 = 120.0;
 pub const BLOCK_H: f32 = 56.0;
@@ -25,7 +25,6 @@ impl History {
 
     pub fn push(&mut self, model: &Model) {
         let snap = serde_json::to_string(model).unwrap_or_default();
-        // truncate redo tail
         self.snapshots.truncate(self.index + 1);
         self.snapshots.push(snap);
         if self.snapshots.len() > self.max {
@@ -70,6 +69,20 @@ pub struct CanvasState {
     pub pan: egui::Vec2,
     pub zoom: f32,
     pub pending_dialog: Option<String>,
+    // Multi-select
+    pub multi_selected: HashSet<String>,
+    pub drag_select_anchor: Option<egui::Pos2>,
+    pub drag_selecting: bool,
+    // Context menu
+    pub context_menu_pos: Option<egui::Pos2>,
+    pub context_menu_target: Option<ContextTarget>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ContextTarget {
+    Block(String),
+    Wire(usize),
+    Canvas(egui::Pos2),
 }
 
 impl Default for CanvasState {
@@ -83,6 +96,11 @@ impl Default for CanvasState {
             pan: egui::Vec2::ZERO,
             zoom: 1.0,
             pending_dialog: None,
+            multi_selected: HashSet::new(),
+            drag_select_anchor: None,
+            drag_selecting: false,
+            context_menu_pos: None,
+            context_menu_target: None,
         }
     }
 }
@@ -99,6 +117,18 @@ fn block_rect(b: &Block) -> egui::Rect {
     )
 }
 
+fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ap = p - a;
+    let ab = b - a;
+    let ab2 = ab.x * ab.x + ab.y * ab.y;
+    if ab2 == 0.0 {
+        return p.distance(a);
+    }
+    let t = ((ap.x * ab.x + ap.y * ab.y) / ab2).clamp(0.0, 1.0);
+    let closest = egui::pos2(a.x + t * ab.x, a.y + t * ab.y);
+    p.distance(closest)
+}
+
 fn port_pos(
     b: &Block,
     port: &str,
@@ -106,7 +136,6 @@ fn port_pos(
     inputs: &[String],
     outputs: &[String],
 ) -> (egui::Pos2, f32) {
-    // returns model-space position and a radius hint
     let r = block_rect(b);
     if is_output {
         let n = outputs.len().max(1) as f32;
@@ -133,12 +162,11 @@ pub fn draw_canvas(
     let ptr = resp.interact_pointer_pos();
 
     // --- zoom (Ctrl+wheel) ---
-    if let Some(pos) = ptr {
+    if let Some(_pos) = ptr {
         let scroll = ui.input(|i| i.zoom_delta());
         if (scroll - 1.0).abs() > f32::EPSILON {
             state.zoom = (state.zoom * scroll).clamp(0.3, 3.0);
         }
-        let _ = pos;
     }
 
     // --- pan (middle-drag, or space+drag) ---
@@ -148,9 +176,6 @@ pub fn draw_canvas(
     {
         state.pan += resp.drag_delta();
     }
-
-    let to_screen = |p: egui::Pos2| origin + state.pan + (p - egui::Pos2::ZERO) * state.zoom;
-    let to_model = |p: egui::Pos2| (p - origin - state.pan) / state.zoom;
 
     // drag blocks (scale delta by zoom)
     if resp.dragged_by(egui::PointerButton::Primary) && state.dragging.is_some() {
@@ -174,7 +199,7 @@ pub fn draw_canvas(
         .map(|b| (b.id.clone(), b.clone()))
         .collect();
 
-    // --- wires ---
+    // --- wires (orthogonal/Manhattan routing) ---
     for (idx, c) in model.connections.iter().enumerate() {
         if let (Some(sb), Some(tb)) = (by_id.get(&c.from.block), by_id.get(&c.to.block)) {
             let sd = def_of(&sb.block_type);
@@ -193,29 +218,42 @@ pub fn draw_canvas(
                 &td.map(|d| d.inputs.clone()).unwrap_or_default(),
                 &[],
             );
-            let a = to_screen(a_model);
-            let bpos = to_screen(b_model);
+            let a = origin + state.pan + a_model.to_vec2() * state.zoom;
+            let bpos = origin + state.pan + b_model.to_vec2() * state.zoom;
+
+            // Manhattan routing: horizontal then vertical with a corner
+            let mid_x = (a.x + bpos.x) / 2.0;
+            let corner1 = egui::pos2(mid_x, a.y);
+            let corner2 = egui::pos2(mid_x, bpos.y);
+
             let selected = state.selected_wire == Some(idx);
             let color = if selected {
                 egui::Color32::GOLD
             } else {
                 egui::Color32::GRAY
             };
-            painter.line_segment([a, bpos], egui::Stroke::new(1.5_f32, color));
-            // wire hit test: distance from pointer to segment midpoint
+            let stroke = egui::Stroke::new(1.5_f32, color);
+            painter.line_segment([a, corner1], stroke);
+            painter.line_segment([corner1, corner2], stroke);
+            painter.line_segment([corner2, bpos], stroke);
+
+            // wire hit test: distance from pointer to any segment
             if let Some(pos) = ptr {
                 if resp.clicked() {
-                    let mid = egui::pos2((a.x + bpos.x) / 2.0, (a.y + bpos.y) / 2.0);
-                    if pos.distance(mid) < 8.0 {
+                    let d1 = distance_to_segment(pos, a, corner1);
+                    let d2 = distance_to_segment(pos, corner1, corner2);
+                    let d3 = distance_to_segment(pos, corner2, bpos);
+                    if d1.min(d2).min(d3) < 6.0 {
                         state.selected_wire = Some(idx);
                         state.selected = None;
+                        state.multi_selected.clear();
                     }
                 }
             }
         }
     }
 
-    // live pending wire
+    // live pending wire (Manhattan)
     if let (Some(from), Some(pos)) = (state.pending_from.clone(), ptr) {
         if let Some(sb) = by_id.get(&from.block) {
             let sd = def_of(&sb.block_type);
@@ -226,10 +264,14 @@ pub fn draw_canvas(
                 &[],
                 &sd.map(|d| d.outputs.clone()).unwrap_or_default(),
             );
-            painter.line_segment(
-                [to_screen(a_model), pos],
-                egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_BLUE),
-            );
+            let a = origin + state.pan + a_model.to_vec2() * state.zoom;
+            let mid_x = (a.x + pos.x) / 2.0;
+            let corner1 = egui::pos2(mid_x, a.y);
+            let corner2 = egui::pos2(mid_x, pos.y);
+            let stroke = egui::Stroke::new(1.5_f32, egui::Color32::LIGHT_BLUE);
+            painter.line_segment([a, corner1], stroke);
+            painter.line_segment([corner1, corner2], stroke);
+            painter.line_segment([corner2, pos], stroke);
         }
     }
 
@@ -237,8 +279,10 @@ pub fn draw_canvas(
     let blocks_snapshot = model.blocks.clone();
     for b in &blocks_snapshot {
         let rect_model = block_rect(b);
-        let rect =
-            egui::Rect::from_min_size(to_screen(rect_model.min), rect_model.size() * state.zoom);
+        let rect = egui::Rect::from_min_size(
+            origin + state.pan + rect_model.min.to_vec2() * state.zoom,
+            rect_model.size() * state.zoom,
+        );
         let color = if state.selected.as_deref() == Some(b.id.as_str()) {
             egui::Color32::LIGHT_BLUE
         } else {
@@ -264,7 +308,7 @@ pub fn draw_canvas(
         // port dots
         for port in &inputs {
             let (m, _) = port_pos(b, port, false, &inputs, &outputs);
-            let s = to_screen(m);
+            let s = origin + state.pan + m.to_vec2() * state.zoom;
             let target = state.pending_from.is_some();
             painter.add(egui::Shape::circle_filled(
                 s,
@@ -278,7 +322,7 @@ pub fn draw_canvas(
         }
         for port in &outputs {
             let (m, _) = port_pos(b, port, true, &inputs, &outputs);
-            let s = to_screen(m);
+            let s = origin + state.pan + m.to_vec2() * state.zoom;
             painter.add(egui::Shape::circle_filled(
                 s,
                 5.0 * state.zoom.sqrt(),
@@ -289,15 +333,23 @@ pub fn draw_canvas(
         if let Some(pos) = ptr {
             // hover/select/drag
             if rect.contains(pos) {
+                // Right-click: context menu
+                if resp.secondary_clicked() {
+                    state.context_menu_pos = Some(pos);
+                    state.context_menu_target = Some(ContextTarget::Block(b.id.clone()));
+                }
+
                 if resp.clicked() {
                     // near output port -> start wire
                     let near_out = outputs.iter().any(|port| {
                         let (m, _) = port_pos(b, port, true, &inputs, &outputs);
-                        pos.distance(to_screen(m)) < 10.0
+                        let s = origin + state.pan + m.to_vec2() * state.zoom;
+                        pos.distance(s) < 10.0
                     });
                     let near_in = inputs.iter().find(|port| {
                         let (m, _) = port_pos(b, port, false, &inputs, &outputs);
-                        pos.distance(to_screen(m)) < 10.0
+                        let s = origin + state.pan + m.to_vec2() * state.zoom;
+                        pos.distance(s) < 10.0
                     });
                     if let Some(port) = near_in.filter(|_| state.pending_from.is_some()) {
                         if let Some(from) = state.pending_from.take() {
@@ -324,7 +376,32 @@ pub fn draw_canvas(
                             port,
                         });
                     } else {
-                        state.selected = Some(b.id.clone());
+                        // Multi-select: Ctrl+Click toggles, Shift+Click extends, plain click selects only this
+                        let ctrl = ui.input(|i| i.modifiers.ctrl);
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        if ctrl {
+                            if state.multi_selected.contains(&b.id) {
+                                state.multi_selected.remove(&b.id);
+                            } else {
+                                state.multi_selected.insert(b.id.clone());
+                            }
+                            state.selected = Some(b.id.clone());
+                        } else if shift && state.selected.is_some() {
+                            let last = state.selected.clone().unwrap();
+                            let mut adding = false;
+                            for bb in &blocks_snapshot {
+                                if bb.id == last || bb.id == b.id {
+                                    adding = !adding;
+                                }
+                                if adding || bb.id == b.id {
+                                    state.multi_selected.insert(bb.id.clone());
+                                }
+                            }
+                        } else {
+                            state.multi_selected.clear();
+                            state.multi_selected.insert(b.id.clone());
+                            state.selected = Some(b.id.clone());
+                        }
                         state.selected_wire = None;
                         state.dragging = Some(b.id.clone());
                     }
@@ -343,21 +420,23 @@ pub fn draw_canvas(
         }
     }
 
-    // double-click empty canvas = add Constant
+    // double-click empty canvas = add Constant; drag on empty = marquee select
     if resp.double_clicked() {
         if let Some(p) = ptr {
             let on_block = blocks_snapshot.iter().any(|b| {
+                let rect_model = block_rect(b);
                 let r = egui::Rect::from_min_size(
-                    to_screen(block_rect(b).min),
-                    block_rect(b).size() * state.zoom,
+                    origin + state.pan + rect_model.min.to_vec2() * state.zoom,
+                    rect_model.size() * state.zoom,
                 );
                 r.contains(p)
             });
             if !on_block {
-                let pos = to_model(p);
+                let pos = (p - origin - state.pan) / state.zoom;
                 history.push(model);
+                let new_id = next_id(state, "blk");
                 model.blocks.push(Block {
-                    id: next_id(state, "blk"),
+                    id: new_id,
                     block_type: "Constant".into(),
                     position: crate::model::Position {
                         x: pos.x - BLOCK_W / 2.0,
@@ -369,13 +448,63 @@ pub fn draw_canvas(
         }
     }
 
-    // Delete selected wire
+    // Drag-select (marquee) on empty canvas
+    if resp.dragged_by(egui::PointerButton::Primary) && state.dragging.is_none() && state.pending_from.is_none() {
+        if !state.drag_selecting {
+            state.drag_select_anchor = ptr;
+            state.drag_selecting = true;
+        }
+    }
+    if resp.drag_stopped() && state.drag_selecting {
+        state.drag_selecting = false;
+        if let (Some(anchor), Some(current)) = (state.drag_select_anchor, ptr) {
+            let min = egui::pos2(anchor.x.min(current.x), anchor.y.min(current.y));
+            let max = egui::pos2(anchor.x.max(current.x), anchor.y.max(current.y));
+            let select_rect = egui::Rect::from_min_max(min, max);
+            state.multi_selected.clear();
+            for b in &blocks_snapshot {
+                let rect_model = block_rect(b);
+                let r = egui::Rect::from_min_size(
+                    origin + state.pan + rect_model.min.to_vec2() * state.zoom,
+                    rect_model.size() * state.zoom,
+                );
+                if select_rect.intersects(r) {
+                    state.multi_selected.insert(b.id.clone());
+                }
+            }
+            if let Some(first) = state.multi_selected.iter().next().cloned() {
+                state.selected = Some(first);
+            }
+        }
+        state.drag_select_anchor = None;
+    }
+
+    // Draw drag-select rectangle
+    if state.drag_selecting {
+        if let (Some(anchor), Some(current)) = (state.drag_select_anchor, ptr) {
+            painter.rect_stroke(
+                egui::Rect::from_two_pos(anchor, current),
+                0.0,
+                egui::Stroke::new(1.0_f32, egui::Color32::LIGHT_BLUE),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
+
+    // Delete selected wire or blocks
     if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
         if let Some(idx) = state.selected_wire.take() {
             if idx < model.connections.len() {
                 let _ = model.connections.remove(idx);
                 history.push(model);
             }
+        } else if !state.multi_selected.is_empty() {
+            let ids: Vec<String> = state.multi_selected.drain().collect();
+            history.push(model);
+            model.blocks.retain(|b| !ids.contains(&b.id));
+            model.connections.retain(|c| !ids.contains(&c.from.block) && !ids.contains(&c.to.block));
+            state.selected = None;
+            state.selected_wire = None;
         }
     }
 }
