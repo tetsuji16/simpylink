@@ -4,7 +4,19 @@
 
 An open-source block-diagram simulator that aims to follow Simulink R2026b editing behaviour. You draw a model with Simulink-like mouse and keyboard operations; simpylink generates a plain, readable, standalone Python script (NumPy + SciPy) behind the scenes, runs it in a separate process when you press **Run**, and plots the result in a Scope window.
 
-> **Status: v0.2 — re-design phase.** The previous v0.1 prototype (Python HTTP backend, commit `3d77194`) is being replaced. The whole plan is written as GitHub Issues; implementation starts from [#31](https://github.com/tetsuji16/simpylink/issues/31). Nothing below is implemented yet unless the corresponding issue is closed.
+> **Status: v0.2 — core implemented, polishing in progress.** The model, IR, Python code generation/runner, canvas editing and the GUI shell work end to end (see PR [#105](https://github.com/tetsuji16/simpylink/pull/105)). Remaining work is tracked issue by issue. Compatibility with Simulink R2026b has **not** been verified yet.
+
+## Quick start
+
+```bash
+python -m pip install -r python/requirements.txt   # numpy, scipy, pytest
+cargo run -p sim_app                                 # GUI
+cargo run -p sim_app -- gui tests/fixtures/models/pi_loop.json
+cargo run -p sim_app -- run tests/fixtures/models/step_gain_scope.json --out-dir results
+cargo run -p sim_app -- codegen tests/fixtures/models/step_gain_scope.json -o step_gain_scope.py
+```
+
+GUI: drag blocks from the Library Browser, drag from an output port to an input port to connect (Ctrl+drag or right-drag on a line to branch), double-click a block for parameters, **Ctrl+T / F5** to run, double-click a Scope to see the result. Set `SIMPYLINK_PYTHON` if Python 3.10+ is not found automatically.
 
 ## 何を作るか
 
@@ -69,7 +81,7 @@ M1 と M2 は並列に進められます。
 - 実装前に `AGENTS.md`（[#41](https://github.com/tetsuji16/simpylink/issues/41) で作成）と、Issue が参照する設計 Issue を読んでください。
 - 1 Issue = 1 Pull Request（本文に `Closes #<番号>`）。
 
-## 必要なもの（M0 完了後）
+## 必要なもの
 
 - Rust stable（1.95 以上）
 - Python 3.10 以上と `numpy>=1.26`, `scipy>=1.11`（`python -m pip install -r python/requirements.txt`）

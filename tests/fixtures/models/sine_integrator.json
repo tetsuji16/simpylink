@@ -1,0 +1,98 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "sine_integrator",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 1e-8,
+    "abs_tol": 1e-10,
+    "max_step": null,
+    "output_step": 1.0
+  },
+  "next_sid": 4,
+  "next_line_id": 3,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Sin",
+        "name": "Sine Wave",
+        "position": [
+          50.0,
+          50.0,
+          80.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Amplitude": "1",
+          "Bias": "0",
+          "Frequency": "1",
+          "Phase": "0",
+          "SampleTime": "0",
+          "SineType": "Time based"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Integrator",
+        "name": "Integrator",
+        "position": [
+          130.0,
+          49.0,
+          160.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "InitialCondition": "0"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          210.0,
+          49.0,
+          240.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "1"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      }
+    ]
+  }
+}

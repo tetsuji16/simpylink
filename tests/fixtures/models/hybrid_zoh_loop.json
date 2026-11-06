@@ -1,0 +1,166 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "hybrid_zoh_loop",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 1e-8,
+    "abs_tol": 1e-10,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 6,
+  "next_line_id": 5,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [
+          50.0,
+          50.0,
+          80.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "1"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Sum",
+        "name": "Sum",
+        "position": [
+          110.0,
+          55.0,
+          130.0,
+          75.0
+        ],
+        "orientation": "right",
+        "params": {
+          "IconShape": "round",
+          "Inputs": "+-",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Integrator",
+        "name": "Integrator",
+        "position": [
+          160.0,
+          49.0,
+          190.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "InitialCondition": "0"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "UnitDelay",
+        "name": "Unit Delay",
+        "position": [
+          160.0,
+          130.0,
+          190.0,
+          160.0
+        ],
+        "orientation": "right",
+        "params": {
+          "InitialCondition": "0",
+          "SampleTime": "0.5"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          250.0,
+          49.0,
+          280.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "1"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 3,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 5,
+          "port": 1
+        },
+        "branches": [
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 4,
+              "port": 1
+            },
+            "branches": []
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "src": {
+          "block": 4,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 2
+        },
+        "branches": []
+      }
+    ]
+  }
+}
