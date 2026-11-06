@@ -1,0 +1,97 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "step_gain_scope",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 0.001,
+    "abs_tol": 1e-6,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 4,
+  "next_line_id": 3,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Step",
+        "name": "Step",
+        "position": [
+          50.0,
+          50.0,
+          80.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "After": "2",
+          "Before": "0",
+          "SampleTime": "0",
+          "Time": "1"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Gain",
+        "name": "Gain",
+        "position": [
+          130.0,
+          50.0,
+          160.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Gain": "3",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          210.0,
+          49.0,
+          240.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "1"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      }
+    ]
+  }
+}

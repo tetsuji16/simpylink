@@ -1,8 +1,7 @@
 /target
-__pycache__/
+**/__pycache__/
 *.pyc
-.venv/
-*.slx
-*.mdl
+.pytest_cache/
+/results/
+/out/
 .DS_Store
-plugins/*.py

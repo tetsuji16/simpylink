@@ -1,7 +1,32 @@
 [workspace]
-members = ["crates/simpylink-gui"]
 resolver = "2"
+members = [
+  "crates/sim_core", "crates/sim_ir", "crates/sim_codegen_py", "crates/sim_runner",
+  "crates/sim_slx", "crates/sim_gui", "crates/sim_app", "tests/integration",
+]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/tetsuji16/simpylink"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+egui = "0.36"
+eframe = "0.36"
+egui_plot = "0.37"
+rfd = "0.15"
+clap = { version = "4.5", features = ["derive"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+quick-xml = "0.41"
+tempfile = "3"
+sim_core = { path = "crates/sim_core" }
+sim_ir = { path = "crates/sim_ir" }
+sim_codegen_py = { path = "crates/sim_codegen_py" }
+sim_runner = { path = "crates/sim_runner" }
+sim_slx = { path = "crates/sim_slx" }
+sim_gui = { path = "crates/sim_gui" }

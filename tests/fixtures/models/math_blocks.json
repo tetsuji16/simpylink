@@ -1,0 +1,313 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "math_blocks",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 0.001,
+    "abs_tol": 1e-6,
+    "max_step": null,
+    "output_step": 1.0
+  },
+  "next_sid": 9,
+  "next_line_id": 8,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [
+          50.0,
+          30.0,
+          80.0,
+          60.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "-2"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Constant",
+        "name": "Constant1",
+        "position": [
+          50.0,
+          110.0,
+          80.0,
+          140.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "3"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Abs",
+        "name": "Abs",
+        "position": [
+          120.0,
+          20.0,
+          150.0,
+          50.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Product",
+        "name": "Product",
+        "position": [
+          120.0,
+          70.0,
+          150.0,
+          100.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Inputs": "*/",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Bias",
+        "name": "Bias",
+        "position": [
+          120.0,
+          120.0,
+          150.0,
+          150.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Bias": "5"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "Saturate",
+        "name": "Saturation",
+        "position": [
+          120.0,
+          170.0,
+          150.0,
+          200.0
+        ],
+        "orientation": "right",
+        "params": {
+          "LowerLimit": "-1",
+          "UpperLimit": "1"
+        }
+      },
+      {
+        "sid": 7,
+        "block_type": "Switch",
+        "name": "Switch",
+        "position": [
+          200.0,
+          220.0,
+          230.0,
+          260.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Criteria": "u2 >= Threshold",
+          "Threshold": "0"
+        }
+      },
+      {
+        "sid": 8,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          300.0,
+          100.0,
+          330.0,
+          132.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "5"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": [
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 4,
+              "port": 2
+            },
+            "branches": []
+          },
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 5,
+              "port": 1
+            },
+            "branches": []
+          },
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 7,
+              "port": 2
+            },
+            "branches": []
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 4,
+          "port": 1
+        },
+        "branches": [
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 6,
+              "port": 1
+            },
+            "branches": []
+          },
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 7,
+              "port": 1
+            },
+            "branches": []
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 3,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 8,
+          "port": 1
+        },
+        "branches": [
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 7,
+              "port": 3
+            },
+            "branches": []
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "src": {
+          "block": 4,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 8,
+          "port": 2
+        },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": {
+          "block": 5,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 8,
+          "port": 3
+        },
+        "branches": []
+      },
+      {
+        "id": 6,
+        "src": {
+          "block": 6,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 8,
+          "port": 4
+        },
+        "branches": []
+      },
+      {
+        "id": 7,
+        "src": {
+          "block": 7,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 8,
+          "port": 5
+        },
+        "branches": []
+      }
+    ]
+  }
+}

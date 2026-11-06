@@ -1,0 +1,137 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "first_order_lag",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 1e-6,
+    "abs_tol": 1e-9,
+    "max_step": null,
+    "output_step": 0.1
+  },
+  "next_sid": 5,
+  "next_line_id": 4,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [
+          50.0,
+          50.0,
+          80.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "1"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Sum",
+        "name": "Sum",
+        "position": [
+          120.0,
+          55.0,
+          140.0,
+          75.0
+        ],
+        "orientation": "right",
+        "params": {
+          "IconShape": "round",
+          "Inputs": "+-",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Integrator",
+        "name": "Integrator",
+        "position": [
+          180.0,
+          49.0,
+          210.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "InitialCondition": "0"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          260.0,
+          49.0,
+          290.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "1"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 3,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 4,
+          "port": 1
+        },
+        "branches": [
+          {
+            "tap": {
+              "segment": 0,
+              "t": 0.5
+            },
+            "points": [],
+            "dst": {
+              "block": 2,
+              "port": 2
+            },
+            "branches": []
+          }
+        ]
+      }
+    ]
+  }
+}

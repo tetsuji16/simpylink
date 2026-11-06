@@ -1,0 +1,13 @@
+[package]
+name = "sim_codegen_py"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+sim_ir.workspace = true
+sim_core.workspace = true
+thiserror.workspace = true
