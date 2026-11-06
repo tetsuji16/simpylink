@@ -2,15 +2,19 @@
 //! controller and paints the diagram with `egui::Painter` (DES-05 §6).
 use super::controller::{CanvasAction, CanvasController, CanvasEvent, CanvasKey, PointerButton};
 use super::geometry::{block_ports, chevron_dir};
-use super::icons::paint_icon;
+use super::icons::{paint_frame, paint_icon, subsystem_port_labels};
 use super::route::{all_paths, PathNode};
 use super::view::{Modifiers, ScreenPos, ScreenVec, ViewTransform};
+use crate::theme::diagram_family;
 use egui::{
     Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2,
 };
 use sim_core::geom::Point;
+use sim_core::ids::BlockId;
+use sim_core::model::{Branch, Orientation, PortRef};
 use sim_core::model::{Model, System};
 use sim_core::path::SystemPath;
+use std::collections::BTreeSet;
 
 /// Drag-and-drop payload from the library browser (block_type).
 #[derive(Debug, Clone, PartialEq)]
@@ -268,17 +272,24 @@ pub fn paint(painter: &egui::Painter, rect: Rect, sys: &System, c: &CanvasContro
         sys
     };
     let p = |pt: Point| to_pos(origin, &view, pt);
-    let lw = z.max(1.0);
+    let lw = z.clamp(1.0, 3.0);
+    // Ports that have a line attached (chevrons are drawn only on free ports, as in Simulink).
+    let mut used_in: BTreeSet<(BlockId, u32)> = BTreeSet::new();
+    let mut used_out: BTreeSet<(BlockId, u32)> = BTreeSet::new();
+    for l in &sys.lines {
+        used_out.insert((l.src.block, l.src.port));
+        collect_dsts(l.dst, &l.branches, &mut used_in);
+    }
     for lp in all_paths(sys) {
         let sel = c.selection.lines.contains(&lp.line);
         let stroke = if sel {
-            Stroke::new(2.0 * lw, SELECT)
+            Stroke::new(lw + 1.0, SELECT)
         } else {
             Stroke::new(lw, BLACK)
         };
         paint_node(painter, &p, &lp.root, stroke, z, true);
     }
-    let font = (12.0 * z).clamp(8.0, 48.0);
+    let name_font = FontId::new((11.0 * z).clamp(4.0, 60.0), diagram_family());
     for b in &sys.blocks {
         let r = Rect::from_two_pos(
             p(Point::new(b.position.left, b.position.top)),
@@ -291,28 +302,63 @@ pub fn paint(painter: &egui::Painter, rect: Rect, sys: &System, c: &CanvasContro
         } else {
             Color32::WHITE
         };
-        let stroke = if sel {
-            Stroke::new(2.0, SELECT)
-        } else {
-            Stroke::new(lw, BLACK)
+        if sel {
+            painter.rect_filled(
+                r.expand(3.0 * z.max(0.7)),
+                CornerRadius::same(2),
+                Color32::from_rgba_unmultiplied(0x00, 0x72, 0xBD, 40),
+            );
+        }
+        let stroke = Stroke::new(lw, if sel { SELECT } else { BLACK });
+        paint_frame(painter, r, b, fill, stroke);
+        let ports = block_ports(b);
+        let in_screen: Vec<Pos2> = ports.inputs.iter().map(|q| p(*q)).collect();
+        paint_icon(painter, r, b, z, &in_screen);
+        if b.block_type == "SubSystem" {
+            let (ins, outs) = subsystem_port_labels(b);
+            let f = FontId::new((9.0 * z).clamp(4.0, 48.0), diagram_family());
+            for (q, n) in in_screen.iter().zip(&ins) {
+                painter.text(
+                    *q + Vec2::new(3.0 * z, 0.0),
+                    Align2::LEFT_CENTER,
+                    n,
+                    f.clone(),
+                    BLACK,
+                );
+            }
+            for (q, n) in ports.outputs.iter().zip(&outs) {
+                painter.text(
+                    p(*q) - Vec2::new(3.0 * z, 0.0),
+                    Align2::RIGHT_CENTER,
+                    n,
+                    f.clone(),
+                    BLACK,
+                );
+            }
+        }
+        let name_pos = match b.orientation {
+            Orientation::Right | Orientation::Left => r.center_bottom() + Vec2::new(0.0, 3.0 * z),
+            Orientation::Up | Orientation::Down => r.center_bottom() + Vec2::new(0.0, 3.0 * z),
         };
-        painter.rect(r, CornerRadius::ZERO, fill, stroke, StrokeKind::Inside);
-        paint_icon(painter, r, b, z);
         painter.text(
-            r.center_bottom() + Vec2::new(0.0, 4.0 * z),
+            name_pos,
             Align2::CENTER_TOP,
             &b.name,
-            FontId::proportional(font),
+            name_font.clone(),
             BLACK,
         );
-        let ports = block_ports(b);
-        for ip in &ports.inputs {
-            let tri = chevron_dir(*ip, b.orientation, true).map(&p);
-            painter.add(Shape::convex_polygon(tri.to_vec(), BLACK, Stroke::NONE));
+        let chev = Stroke::new(lw, if sel { SELECT } else { BLACK });
+        for (i, ip) in ports.inputs.iter().enumerate() {
+            if !used_in.contains(&(b.sid, i as u32 + 1)) {
+                let tri = chevron_dir(*ip, b.orientation, true).map(&p);
+                painter.add(Shape::line(vec![tri[0], tri[2], tri[1]], chev));
+            }
         }
-        for op in &ports.outputs {
-            let tri = chevron_dir(*op, b.orientation, false).map(&p);
-            painter.add(Shape::convex_polygon(tri.to_vec(), BLACK, Stroke::NONE));
+        for (i, op) in ports.outputs.iter().enumerate() {
+            if !used_out.contains(&(b.sid, i as u32 + 1)) {
+                let tri = chevron_dir(*op, b.orientation, false).map(&p);
+                painter.add(Shape::line(vec![tri[0], tri[2], tri[1]], chev));
+            }
         }
     }
     if let Some(rb) = preview.rubber_band {
@@ -343,7 +389,18 @@ fn paint_node(
     z: f32,
     root: bool,
 ) {
-    let pts: Vec<Pos2> = node.points.iter().map(|q| p(*q)).collect();
+    // Snap to pixel centres so that 1 px lines stay crisp and black.
+    let pts: Vec<Pos2> = node
+        .points
+        .iter()
+        .map(|q| {
+            let v = p(*q);
+            Pos2::new(
+                painter.round_to_pixel_center(v.x),
+                painter.round_to_pixel_center(v.y),
+            )
+        })
+        .collect();
     if pts.len() >= 2 {
         painter.add(Shape::line(pts.clone(), stroke));
         if node.dst.is_some() {
@@ -351,8 +408,8 @@ fn paint_node(
             let prev = pts[pts.len() - 2];
             let d = (tip - prev).normalized();
             if d.length() > 0.0 {
-                let back = tip - d * 8.0 * z;
-                let n = Vec2::new(-d.y, d.x) * 3.0 * z;
+                let back = tip - d * 7.0 * z;
+                let n = Vec2::new(-d.y, d.x) * 3.5 * z;
                 painter.add(Shape::convex_polygon(
                     vec![tip, back + n, back - n],
                     stroke.color,
@@ -361,10 +418,23 @@ fn paint_node(
             }
         }
         if !root {
-            painter.circle_filled(pts[0], 2.5 * z.max(0.6), stroke.color);
+            painter.circle_filled(
+                pts[0],
+                2.5 * z.max(0.6) + (stroke.width - 1.0).max(0.0) * 0.5,
+                stroke.color,
+            );
         }
     }
     for ch in &node.children {
         paint_node(painter, p, ch, stroke, z, false);
+    }
+}
+
+fn collect_dsts(dst: Option<PortRef>, branches: &[Branch], out: &mut BTreeSet<(BlockId, u32)>) {
+    if let Some(d) = dst {
+        out.insert((d.block, d.port));
+    }
+    for b in branches {
+        collect_dsts(b.dst, &b.branches, out);
     }
 }
