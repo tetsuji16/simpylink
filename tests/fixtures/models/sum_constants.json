@@ -1,0 +1,125 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "sum_constants",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 0.001,
+    "abs_tol": 1e-6,
+    "max_step": null,
+    "output_step": 1.0
+  },
+  "next_sid": 5,
+  "next_line_id": 4,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [
+          50.0,
+          30.0,
+          80.0,
+          60.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "4"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Constant",
+        "name": "Constant1",
+        "position": [
+          50.0,
+          90.0,
+          80.0,
+          120.0
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "1.5"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Sum",
+        "name": "Sum",
+        "position": [
+          130.0,
+          55.0,
+          150.0,
+          75.0
+        ],
+        "orientation": "right",
+        "params": {
+          "IconShape": "round",
+          "Inputs": "+-",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Outport",
+        "name": "Out1",
+        "position": [
+          210.0,
+          58.0,
+          240.0,
+          72.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Port": "1"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 2
+        },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 3,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 4,
+          "port": 1
+        },
+        "branches": []
+      }
+    ]
+  }
+}

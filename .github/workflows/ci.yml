@@ -1,29 +1,58 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
 jobs:
-  backend:
-    strategy:
-      matrix:
-        python-version: ["3.10", "3.12", "3.13"]
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "${{ matrix.python-version }}" }
-      - run: pip install -e backend
-      - run: python -m unittest discover -s backend/tests -v
-  version-check:
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt }
+      - run: cargo fmt --all -- --check
+  clippy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python -c "import re; c=open('Cargo.toml').read(); v=re.search(r'version = \"([0-9.]+)\"', c).group(1); p=open('backend/simpylink_backend/__init__.py').read(); assert f'__version__ = \"{v}\"' in p, (v, p)"
-  gui:
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev libwayland-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+  test:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --workspace
-      - run: cargo clippy --workspace -- -D warnings
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgtk-3-dev libwayland-dev
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -r python/requirements.txt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+        env:
+          SIMPYLINK_PYTHON: python
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python-version }}" }
+      - run: python -m pip install -r python/requirements.txt
+      - run: python -m pytest python/tests -q

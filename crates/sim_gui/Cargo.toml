@@ -1,0 +1,22 @@
+[package]
+name = "sim_gui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+sim_core.workspace = true
+sim_ir.workspace = true
+sim_codegen_py.workspace = true
+sim_runner.workspace = true
+sim_slx.workspace = true
+egui.workspace = true
+eframe.workspace = true
+egui_plot.workspace = true
+rfd.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

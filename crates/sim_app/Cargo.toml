@@ -1,0 +1,28 @@
+[package]
+name = "sim_app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+sim_gui.workspace = true
+sim_core.workspace = true
+sim_ir.workspace = true
+sim_codegen_py.workspace = true
+sim_runner.workspace = true
+sim_slx.workspace = true
+clap.workspace = true
+eframe.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "simpylink"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true
