@@ -10,6 +10,9 @@ pub mod panels;
 pub mod scope;
 pub mod sim;
 pub mod state;
+pub mod theme;
+pub mod toolstrip;
+pub mod ui_icons;
 
 pub use app::{run_gui, SimpylinkApp};
 
