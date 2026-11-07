@@ -5,7 +5,7 @@ use crate::canvas::view::{Modifiers, ScreenPos};
 use crate::canvas::widget::CanvasWidget;
 use crate::dialogs::model_settings::SettingsDialogState;
 use crate::panels;
-use crate::scope::{scope_series, show_scope_window};
+use crate::scope::{scope_series, show_scope_window, ScopeAction, ScopeInfo, ScopeView};
 use crate::state::{AppState, PendingAction, SaveResult};
 use crate::theme;
 use crate::toolstrip::{StripAction, StripInfo, Toolstrip};
@@ -14,6 +14,7 @@ use egui::{Key, Modifiers as EM};
 use sim_core::edit::Command;
 use sim_core::geom::Point;
 use sim_core::model::SolverKind;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// The eframe application.
@@ -26,6 +27,7 @@ pub struct SimpylinkApp {
     hover: Option<ScreenPos>,
     canvas_origin: egui::Pos2,
     last_title: String,
+    scope_views: BTreeMap<sim_core::ids::BlockId, ScopeView>,
 }
 
 impl SimpylinkApp {
@@ -40,6 +42,7 @@ impl SimpylinkApp {
             hover: None,
             canvas_origin: egui::Pos2::ZERO,
             last_title: String::new(),
+            scope_views: BTreeMap::new(),
         }
     }
 
@@ -247,6 +250,13 @@ impl SimpylinkApp {
                     }
                 }
             }
+            StripAction::ScopeSettings
+            | StripAction::ScopeZoomIn
+            | StripAction::ScopeZoomX
+            | StripAction::ScopeZoomY
+            | StripAction::ScopePan
+            | StripAction::ScopeAutoscale
+            | StripAction::ScopeLegend => {}
             StripAction::Quit => {
                 if self.state.request(PendingAction::Quit) {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -710,6 +720,16 @@ impl eframe::App for SimpylinkApp {
         // Scope windows.
         let reset = std::mem::take(&mut self.state.scope_reset);
         let scopes: Vec<_> = self.state.open_scopes.iter().copied().collect();
+        let info = ScopeInfo {
+            running: self.state.sim.is_running(),
+            sim_time: self
+                .state
+                .results
+                .as_ref()
+                .and_then(|r| r.time.last().copied()),
+        };
+        self.scope_views
+            .retain(|k, _| self.state.open_scopes.contains(k));
         for sid in scopes {
             let name = find_name(&self.state.doc.model.root, sid)
                 .unwrap_or_else(|| format!("Scope {sid}"));
@@ -720,15 +740,15 @@ impl eframe::App for SimpylinkApp {
                 .map(|r| scope_series(r, sid))
                 .unwrap_or_default();
             let mut open = true;
-            if show_scope_window(
-                &ctx,
-                sid,
-                &format!("Scope: {name}"),
-                &series,
-                &mut open,
-                reset,
-            ) {
-                self.state.open_parameters(sid);
+            let view = self.scope_views.entry(sid).or_default();
+            let actions =
+                show_scope_window(&ctx, sid, &name, &series, &mut open, reset, view, &info);
+            for a in actions {
+                match a {
+                    ScopeAction::Parameters => self.state.open_parameters(sid),
+                    ScopeAction::Run => self.state.start_run(),
+                    ScopeAction::Stop => self.state.stop_run(),
+                }
             }
             if !open {
                 self.state.open_scopes.remove(&sid);
