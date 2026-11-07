@@ -56,14 +56,19 @@ impl RunHandle {
         out_dir: &Path,
         timeout: Option<Duration>,
     ) -> Result<RunHandle, RunnerError> {
-        std::fs::create_dir_all(out_dir)?;
+        // The child runs inside `out_dir`, so resolve relative paths against the
+        // caller's working directory first; otherwise a relative `out_dir` would
+        // be applied twice (once here and once by the child's working directory).
+        let script = std::path::absolute(script)?;
+        let out_dir = std::path::absolute(out_dir)?;
+        std::fs::create_dir_all(&out_dir)?;
         let mut cmd = Command::new(&env.program);
         cmd.args(&env.prefix_args)
             .arg("-u")
-            .arg(script)
+            .arg(&script)
             .arg("--out-dir")
-            .arg(out_dir)
-            .current_dir(out_dir)
+            .arg(&out_dir)
+            .current_dir(&out_dir)
             .env("PYTHONIOENCODING", "utf-8")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
