@@ -28,7 +28,13 @@ fn state_with_fixture() -> AppState {
 }
 
 fn gain_left(st: &AppState) -> f64 {
-    st.doc.model.root.block(BlockId(2)).expect("gain").position.left
+    st.doc
+        .model
+        .root
+        .block(BlockId(2))
+        .expect("gain")
+        .position
+        .left
 }
 
 #[test]
