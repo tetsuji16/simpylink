@@ -19,47 +19,205 @@ pub const LIBRARIES: [&str; 6] = [
     "Ports & Subsystems",
 ];
 
-/// Library browser (left panel). Returns a block type to add at the view centre (context menu).
-pub fn library_panel(ui: &mut egui::Ui, filter: &mut String) -> Option<String> {
+/// Blocks listed under "Commonly Used Blocks" (Simulink's own selection, limited to supported blocks).
+pub const COMMONLY_USED: [&str; 12] = [
+    "Constant",
+    "Gain",
+    "Inport",
+    "Integrator",
+    "Outport",
+    "Product",
+    "Saturate",
+    "Scope",
+    "SubSystem",
+    "Sum",
+    "Switch",
+    "UnitDelay",
+];
+const COMMON: &str = "Commonly Used Blocks";
+
+/// A block with default parameters used to draw library previews.
+pub fn preview_block(s: &sim_core::library::BlockSpec) -> sim_core::model::Block {
+    let mut b = sim_core::model::Block {
+        sid: sim_core::ids::BlockId(0),
+        block_type: s.block_type.to_string(),
+        name: s.display_name.to_string(),
+        position: sim_core::geom::Rect::new(0.0, 0.0, s.default_size.0, s.default_size.1),
+        orientation: sim_core::model::Orientation::Right,
+        params: Default::default(),
+        system: None,
+    };
+    sim_core::library::fill_default_params(&mut b);
+    b
+}
+
+/// Paints a library preview of `s` centred in `area`.
+fn paint_preview(painter: &egui::Painter, area: egui::Rect, s: &sim_core::library::BlockSpec) {
+    use crate::canvas::geometry::{block_ports, chevron_dir};
+    use crate::canvas::icons::{paint_frame, paint_icon, INK};
+    let b = preview_block(s);
+    let (w, h) = s.default_size;
+    let k = ((area.width() as f64 - 12.0) / w)
+        .min((area.height() as f64 - 4.0) / h)
+        .min(1.4) as f32;
+    let c = area.center();
+    let map = |q: sim_core::geom::Point| {
+        egui::pos2(
+            c.x + (q.x - w / 2.0) as f32 * k,
+            c.y + (q.y - h / 2.0) as f32 * k,
+        )
+    };
+    let r = egui::Rect::from_center_size(c, egui::vec2(w as f32 * k, h as f32 * k));
+    let stroke = egui::Stroke::new(1.0, INK);
+    paint_frame(painter, r, &b, Color32::WHITE, stroke);
+    let ports = block_ports(&b);
+    let ins: Vec<egui::Pos2> = ports.inputs.iter().map(|q| map(*q)).collect();
+    paint_icon(painter, r, &b, k, &ins);
+    for q in &ports.inputs {
+        let t = chevron_dir(*q, b.orientation, true).map(map);
+        painter.add(egui::Shape::line(vec![t[0], t[2], t[1]], stroke));
+    }
+    for q in &ports.outputs {
+        let t = chevron_dir(*q, b.orientation, false).map(map);
+        painter.add(egui::Shape::line(vec![t[0], t[2], t[1]], stroke));
+    }
+}
+
+/// Library Browser (left panel): search field, library tree and a grid of
+/// block icons that can be dragged onto the canvas. Returns a block type to
+/// add at the view centre (double-click or context menu).
+pub fn library_panel(
+    ui: &mut egui::Ui,
+    filter: &mut String,
+    selected: &mut Option<&'static str>,
+) -> Option<String> {
     let mut add = None;
-    ui.heading("Library Browser");
-    ui.add(egui::TextEdit::singleline(filter).hint_text("Search blocks"));
+    let sel = selected.unwrap_or(COMMON);
+    // Title row.
+    egui::Frame::NONE
+        .fill(crate::theme::BAR_BG)
+        .inner_margin(egui::Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new("Library Browser").strong().size(13.0));
+            ui.add(
+                egui::TextEdit::singleline(filter)
+                    .hint_text("Enter search term")
+                    .desired_width(f32::INFINITY),
+            );
+        });
     let q = filter.trim().to_lowercase();
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        for lib in LIBRARIES {
-            let items: Vec<_> = registry()
-                .iter()
-                .filter(|s| s.library == lib)
-                .filter(|s| {
-                    q.is_empty()
-                        || s.display_name.to_lowercase().contains(&q)
-                        || s.block_type.to_lowercase().contains(&q)
-                })
-                .collect();
-            if items.is_empty() {
-                continue;
-            }
-            egui::CollapsingHeader::new(lib)
+    // Tree.
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(4, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::CollapsingHeader::new(RichText::new("Simulink").strong())
                 .default_open(true)
                 .show(ui, |ui| {
-                    for s in items {
+                    let mut libs: Vec<&'static str> = vec![COMMON];
+                    let mut rest: Vec<&'static str> = LIBRARIES.to_vec();
+                    rest.sort_unstable();
+                    libs.extend(rest);
+                    for lib in libs {
+                        let is_sel = q.is_empty() && sel == lib;
+                        let r = ui.add(
+                            egui::Button::selectable(is_sel, lib)
+                                .frame_when_inactive(false)
+                                .min_size(egui::vec2(ui.available_width(), 20.0)),
+                        );
+                        if r.clicked() {
+                            *selected = Some(lib);
+                            filter.clear();
+                        }
+                    }
+                });
+        });
+    ui.separator();
+    let items: Vec<&'static sim_core::library::BlockSpec> = if !q.is_empty() {
+        registry()
+            .iter()
+            .filter(|s| {
+                s.display_name.to_lowercase().contains(&q)
+                    || s.block_type.to_lowercase().contains(&q)
+            })
+            .collect()
+    } else if sel == COMMON {
+        COMMONLY_USED
+            .iter()
+            .filter_map(|t| sim_core::library::spec(t))
+            .collect()
+    } else {
+        registry().iter().filter(|s| s.library == sel).collect()
+    };
+    let heading = if q.is_empty() {
+        format!("Simulink/{sel}")
+    } else {
+        format!("Search results: '{}' ({})", filter.trim(), items.len())
+    };
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.label(RichText::new(heading).small().color(crate::theme::CAPTION));
+    });
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let tile = egui::vec2(82.0, 78.0);
+            let cols = ((ui.available_width() - 4.0) / tile.x).floor().max(1.0) as usize;
+            for row in items.chunks(cols) {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for s in row {
                         let r = ui.dnd_drag_source(
                             egui::Id::new(("lib", s.block_type)),
                             LibraryDrag(s.block_type.to_string()),
                             |ui| {
-                                ui.label(s.display_name);
+                                let (rect, resp) =
+                                    ui.allocate_exact_size(tile, egui::Sense::click());
+                                let painter = ui.painter();
+                                if resp.hovered() {
+                                    painter.rect_filled(
+                                        rect.shrink(1.0),
+                                        2.0,
+                                        crate::theme::BUTTON_HOVER,
+                                    );
+                                }
+                                let icon_area = egui::Rect::from_min_size(
+                                    rect.min + egui::vec2(6.0, 6.0),
+                                    egui::vec2(tile.x - 12.0, 42.0),
+                                );
+                                paint_preview(painter, icon_area, s);
+                                let font = egui::FontId::proportional(11.0);
+                                let g = painter.layout(
+                                    s.display_name.to_string(),
+                                    font,
+                                    crate::theme::TEXT,
+                                    tile.x - 6.0,
+                                );
+                                let gw = g.size().x;
+                                painter.galley(
+                                    egui::pos2(rect.center().x - gw / 2.0, rect.top() + 52.0),
+                                    g,
+                                    crate::theme::TEXT,
+                                );
+                                resp
                             },
                         );
-                        r.response.on_hover_text(s.block_type).context_menu(|ui| {
-                            if ui.button("Add to model").clicked() {
+                        let resp = r.inner.on_hover_text(s.description);
+                        if resp.double_clicked() {
+                            add = Some(s.block_type.to_string());
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button("Add block to model").clicked() {
                                 add = Some(s.block_type.to_string());
                                 ui.close();
                             }
                         });
                     }
                 });
-        }
-    });
+            }
+        });
     add
 }
 

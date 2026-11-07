@@ -7,6 +7,24 @@ use sim_core::model::{Branch, Line, Orientation, PortRef, System, TapPoint};
 pub const STUB: f64 = 15.0;
 pub const FEEDBACK_GAP: f64 = 20.0;
 pub const DANGLING_STUB: f64 = 20.0;
+/// Vertical space reserved under a block for its name label.
+pub const NAME_CLEARANCE: f64 = 18.0;
+
+/// y coordinate for the horizontal run of a feedback (backwards) line between
+/// x = `x0` and `x1`: below `base + FEEDBACK_GAP` and below the name labels of
+/// the blocks in that span that sit in the same row (so the line does not
+/// cross block names, issue #44).
+pub fn feedback_level(sys: &System, x0: f64, x1: f64, base: f64) -> f64 {
+    let (lo, hi) = (x0.min(x1) - STUB, x0.max(x1) + STUB);
+    let mut y = base + FEEDBACK_GAP;
+    for b in &sys.blocks {
+        let r = b.position;
+        if r.right >= lo && r.left <= hi && r.top <= base + FEEDBACK_GAP {
+            y = y.max(r.bottom + NAME_CLEARANCE + 6.0);
+        }
+    }
+    y.round()
+}
 
 /// One polyline of a line tree.
 #[derive(Debug, Clone, PartialEq)]
@@ -109,7 +127,8 @@ fn node(
             v
         }
         (true, Some((p, din, bot))) => {
-            auto_route_dirs(start, sdir, p, din, sbottom.max(bot) + FEEDBACK_GAP)
+            let below = feedback_level(sys, start.x, p.x, sbottom.max(bot));
+            auto_route_dirs(start, sdir, p, din, below)
         }
         (true, None) => vec![
             start,
@@ -170,4 +189,41 @@ pub fn node_at<'a>(root: &'a PathNode, branch: &[usize]) -> Option<&'a PathNode>
         n = n.children.get(*i)?;
     }
     Some(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_core::geom::Rect;
+    use sim_core::ids::BlockId;
+    use sim_core::model::Block;
+
+    fn blk(sid: u32, r: Rect) -> Block {
+        Block {
+            sid: BlockId(sid),
+            block_type: "Gain".into(),
+            name: format!("G{sid}"),
+            position: r,
+            orientation: Orientation::Right,
+            params: Default::default(),
+            system: None,
+        }
+    }
+
+    #[test]
+    fn feedback_runs_below_block_names() {
+        let mut sys = System::default();
+        sys.blocks.push(blk(1, Rect::new(100.0, 40.0, 150.0, 80.0)));
+        sys.blocks.push(blk(2, Rect::new(200.0, 50.0, 230.0, 70.0)));
+        // Far below the row: must not push the line down.
+        sys.blocks
+            .push(blk(3, Rect::new(100.0, 400.0, 150.0, 440.0)));
+        let y = feedback_level(&sys, 240.0, 90.0, 70.0);
+        assert_eq!(y, 80.0 + NAME_CLEARANCE + 6.0);
+        // Nothing in the span: plain gap below the base.
+        assert_eq!(
+            feedback_level(&sys, 600.0, 500.0, 70.0),
+            70.0 + FEEDBACK_GAP
+        );
+    }
 }

@@ -91,6 +91,8 @@ pub struct AppState {
     pub python_error: Option<String>,
     pub import_report: Option<Vec<String>>,
     pub quit_confirmed: bool,
+    /// Fit the view (max 100%) once the canvas size is known (set after opening a file).
+    pub fit_pending: bool,
 }
 
 impl Default for AppState {
@@ -120,7 +122,7 @@ impl AppState {
             doc: Document::new_untitled(),
             canvas: CanvasController::new(),
             show_library: true,
-            show_bottom: true,
+            show_bottom: false,
             status: "Ready".into(),
             clipboard: None,
             pending_system_copy: None,
@@ -140,6 +142,7 @@ impl AppState {
             python_error: None,
             import_report: None,
             quit_confirmed: false,
+            fit_pending: false,
         }
     }
 
@@ -485,7 +488,8 @@ impl AppState {
         };
         self.reset_view_state();
         let sys = self.doc.model.root.clone();
-        self.canvas.fit_to_view_limited(&sys, 2.0);
+        self.canvas.fit_to_view_limited(&sys, 1.0);
+        self.fit_pending = true;
         self.import_report = report;
         self.status = format!("Opened {}", path.display());
         Ok(())
@@ -581,6 +585,7 @@ impl AppState {
                 let (e, w) = count(&d);
                 self.diagnostics = d;
                 self.status = format!("Cannot run: {e} errors, {w} warnings (see Diagnostics)");
+                self.show_bottom = true;
             }
             Err(StartError::Python(m)) => {
                 self.status = "Python environment problem".into();
@@ -589,6 +594,12 @@ impl AppState {
             Err(StartError::Io(m)) => self.status = format!("Cannot write the script: {m}"),
             Err(StartError::AlreadyRunning) => {}
         }
+    }
+
+    /// Opens the Scope windows of every Scope block (Data Inspector button).
+    pub fn open_all_scopes(&mut self) {
+        self.open_scopes = scope_sids(&self.doc.model.root);
+        self.scope_reset = true;
     }
 
     /// Ctrl+Shift+T.
@@ -621,6 +632,9 @@ impl AppState {
                         summary.error.clone().unwrap_or_default()
                     ),
                 };
+                if summary.error.is_some() {
+                    self.show_bottom = true;
+                }
                 if results.is_some() {
                     self.results = results;
                     self.scope_reset = true;
