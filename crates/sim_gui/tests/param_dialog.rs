@@ -40,7 +40,10 @@ fn open_gain_lists_fields_without_errors() {
 fn ok_with_change_closes_and_executes() {
     let mut d = open_gain();
     d.set_value(0, "5".into());
-    assert_eq!(d.changed(), vec![("Gain".to_string(), Some("5".to_string()))]);
+    assert_eq!(
+        d.changed(),
+        vec![("Gain".to_string(), Some("5".to_string()))]
+    );
     assert_eq!(
         d.press(DialogButton::Ok),
         DialogOutcome::CloseAndExecute(Command::SetParams {
@@ -123,7 +126,13 @@ fn app_state_applies_and_undoes_param_change() {
     d.set_value(0, "5".into());
     st.param_dialog_press(DialogButton::Ok);
     assert!(st.param_dialog.is_none());
-    assert_eq!(st.doc.model.root.block(BlockId(2)).unwrap().params["Gain"], "5");
+    assert_eq!(
+        st.doc.model.root.block(BlockId(2)).unwrap().params["Gain"],
+        "5"
+    );
     st.handle_action(CanvasAction::Undo);
-    assert_eq!(st.doc.model.root.block(BlockId(2)).unwrap().params["Gain"], "3");
+    assert_eq!(
+        st.doc.model.root.block(BlockId(2)).unwrap().params["Gain"],
+        "3"
+    );
 }
