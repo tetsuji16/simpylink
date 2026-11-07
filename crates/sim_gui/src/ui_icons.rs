@@ -49,6 +49,15 @@ pub enum UiIcon {
     HidePanel,
     Model,
     FastRestart,
+    ZoomX,
+    ZoomY,
+    Pan,
+    Legend,
+    Style,
+    Cursors,
+    Statistics,
+    PeakFinder,
+    Bilevel,
 }
 
 /// Grey, lightened version of a colour for disabled icons (white stays white).
@@ -564,6 +573,122 @@ pub fn paint_ui_icon(painter: &egui::Painter, r: Rect, icon: UiIcon, enabled: bo
                     );
                 }
             }
+        }
+        UiIcon::ZoomX | UiIcon::ZoomY => {
+            painter.circle(p(14.0, 14.0), 8.5 * s, paper, Stroke::new(2.2 * s, ink));
+            painter.line_segment([p(20.0, 20.0), p(28.0, 28.0)], Stroke::new(3.5 * s, ink));
+            let (a, b) = if icon == UiIcon::ZoomX {
+                (p(8.5, 14.0), p(19.5, 14.0))
+            } else {
+                (p(14.0, 8.5), p(14.0, 19.5))
+            };
+            painter.line_segment([a, b], Stroke::new(1.8 * s, blue));
+            for (tip, back) in [(a, b), (b, a)] {
+                let d = (tip - back).normalized();
+                let n = Vec2::new(-d.y, d.x);
+                poly(
+                    vec![
+                        tip,
+                        tip - d * 3.0 * s + n * 2.2 * s,
+                        tip - d * 3.0 * s - n * 2.2 * s,
+                    ],
+                    blue,
+                    Stroke::NONE,
+                );
+            }
+        }
+        UiIcon::Pan => {
+            let c = p(16.0, 16.0);
+            for d in [Vec2::X, -Vec2::X, Vec2::Y, -Vec2::Y] {
+                let tip = c + d * 13.0 * s;
+                painter.line_segment([c, tip], Stroke::new(2.0 * s, ink));
+                let n = Vec2::new(-d.y, d.x);
+                poly(
+                    vec![
+                        tip,
+                        tip - d * 5.0 * s + n * 3.5 * s,
+                        tip - d * 5.0 * s - n * 3.5 * s,
+                    ],
+                    ink,
+                    Stroke::NONE,
+                );
+            }
+        }
+        UiIcon::Legend => {
+            fill_rect(4.0, 6.0, 28.0, 26.0, paper, ink);
+            for (i, c) in [blue, orange, g(Color32::from_rgb(0x77, 0xAC, 0x30))]
+                .iter()
+                .enumerate()
+            {
+                let y = 11.0 + i as f32 * 5.0;
+                painter.line_segment([p(8.0, y), p(14.0, y)], Stroke::new(2.0 * s, *c));
+                painter.line_segment([p(16.0, y), p(24.0, y)], Stroke::new(1.0 * s, ink));
+            }
+        }
+        UiIcon::Style => {
+            fill_rect(
+                4.0,
+                6.0,
+                28.0,
+                26.0,
+                g(Color32::from_rgb(0x20, 0x20, 0x20)),
+                ink,
+            );
+            line(
+                vec![p(7.0, 21.0), p(13.0, 12.0), p(19.0, 18.0), p(25.0, 10.0)],
+                g(Color32::from_rgb(0xF0, 0xE0, 0x20)),
+            );
+        }
+        UiIcon::Cursors => {
+            fill_rect(4.0, 6.0, 28.0, 26.0, paper, ink);
+            line(
+                vec![p(6.0, 22.0), p(12.0, 13.0), p(18.0, 19.0), p(26.0, 10.0)],
+                blue,
+            );
+            painter.line_segment([p(12.0, 6.0), p(12.0, 26.0)], Stroke::new(1.2 * s, orange));
+            painter.circle_filled(p(12.0, 13.0), 2.0 * s, orange);
+        }
+        UiIcon::Statistics => {
+            fill_rect(4.0, 6.0, 28.0, 26.0, paper, ink);
+            painter.text(
+                p(16.0, 16.0),
+                egui::Align2::CENTER_CENTER,
+                "μσ",
+                egui::FontId::proportional(11.0 * s),
+                blue,
+            );
+        }
+        UiIcon::PeakFinder => {
+            fill_rect(4.0, 6.0, 28.0, 26.0, paper, ink);
+            line(
+                vec![
+                    p(6.0, 23.0),
+                    p(11.0, 18.0),
+                    p(15.0, 10.0),
+                    p(19.0, 18.0),
+                    p(26.0, 21.0),
+                ],
+                blue,
+            );
+            poly(
+                vec![p(15.0, 8.0), p(12.5, 4.0), p(17.5, 4.0)],
+                orange,
+                Stroke::NONE,
+            );
+        }
+        UiIcon::Bilevel => {
+            fill_rect(4.0, 6.0, 28.0, 26.0, paper, ink);
+            line(
+                vec![
+                    p(6.0, 22.0),
+                    p(11.0, 22.0),
+                    p(13.0, 11.0),
+                    p(20.0, 11.0),
+                    p(22.0, 22.0),
+                    p(26.0, 22.0),
+                ],
+                blue,
+            );
         }
         UiIcon::Help => {
             painter.circle(p(16.0, 16.0), 12.0 * s, blue, Stroke::NONE);

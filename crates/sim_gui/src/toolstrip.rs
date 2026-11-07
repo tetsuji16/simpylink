@@ -76,6 +76,17 @@ pub enum StripAction {
     ExportPython,
     ExportSlx,
     Quit,
+    /// Scope window: Settings… (block parameters).
+    ScopeSettings,
+    /// Scope window: zoom/pan mode buttons.
+    ScopeZoomIn,
+    ScopeZoomX,
+    ScopeZoomY,
+    ScopePan,
+    /// Scope window: Scale X & Y axes limits to the data.
+    ScopeAutoscale,
+    /// Scope window: show/hide the legend.
+    ScopeLegend,
 }
 
 /// Read-only information the toolstrip needs to enable/label buttons.
@@ -110,8 +121,69 @@ impl Default for Toolstrip {
     }
 }
 
+/// Allocates a full-width toolstrip (tab bar + body), paints the tabs and
+/// returns (whole rect, body rect, clicked tab index).
+pub(crate) fn strip_frame(
+    ui: &mut egui::Ui,
+    salt: &str,
+    labels: &[&str],
+    selected: usize,
+) -> (Rect, Rect, Option<usize>) {
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), TAB_H + BODY_H),
+        Sense::hover(),
+    );
+    let painter = ui.painter().clone();
+    let tab_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_H));
+    painter.rect_filled(tab_rect, CornerRadius::ZERO, theme::TAB_BAR);
+    let body = Rect::from_min_max(Pos2::new(rect.left(), tab_rect.bottom()), rect.max);
+    painter.rect_filled(body, CornerRadius::ZERO, theme::STRIP_BG);
+    painter.line_segment(
+        [body.left_bottom(), body.right_bottom()],
+        Stroke::new(1.0, theme::BORDER),
+    );
+    let mut x = rect.left();
+    let tab_font = FontId::proportional(13.0);
+    let mut clicked = None;
+    for (i, label) in labels.iter().enumerate() {
+        let g = painter.layout_no_wrap(label.to_string(), tab_font.clone(), Color32::WHITE);
+        let r = Rect::from_min_size(
+            Pos2::new(x, tab_rect.top() + 3.0),
+            Vec2::new(g.size().x + 32.0, TAB_H - 3.0),
+        );
+        let resp = ui.interact(r, ui.id().with(("tab", salt, i)), Sense::click());
+        let is_sel = i == selected;
+        if is_sel {
+            painter.rect_filled(
+                r,
+                CornerRadius {
+                    nw: 2,
+                    ne: 2,
+                    sw: 0,
+                    se: 0,
+                },
+                theme::STRIP_BG,
+            );
+        } else if resp.hovered() {
+            painter.rect_filled(r, CornerRadius::ZERO, theme::TAB_HOVER);
+        }
+        painter.text(
+            r.center(),
+            Align2::CENTER_CENTER,
+            *label,
+            tab_font.clone(),
+            if is_sel { theme::TEXT } else { Color32::WHITE },
+        );
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        x = r.right() + 2.0;
+    }
+    (rect, body, clicked)
+}
+
 /// One button description.
-struct Btn {
+pub(crate) struct Btn {
     id: &'static str,
     icon: UiIcon,
     label: &'static str,
@@ -121,7 +193,7 @@ struct Btn {
     checked: bool,
 }
 
-fn btn(
+pub(crate) fn btn(
     id: &'static str,
     icon: UiIcon,
     label: &'static str,
@@ -140,7 +212,15 @@ fn btn(
     }
 }
 
-fn todo_btn(id: &'static str, icon: UiIcon, label: &'static str) -> Btn {
+impl Btn {
+    /// Marks the button as a pressed toggle.
+    pub(crate) fn checked(mut self, on: bool) -> Btn {
+        self.checked = on;
+        self
+    }
+}
+
+pub(crate) fn todo_btn(id: &'static str, icon: UiIcon, label: &'static str) -> Btn {
     Btn {
         id,
         icon,
@@ -152,7 +232,7 @@ fn todo_btn(id: &'static str, icon: UiIcon, label: &'static str) -> Btn {
     }
 }
 
-struct Builder<'a> {
+pub(crate) struct Builder<'a> {
     ui: &'a mut egui::Ui,
     x: f32,
     top: f32,
@@ -160,7 +240,23 @@ struct Builder<'a> {
     actions: Vec<StripAction>,
 }
 
-impl Builder<'_> {
+impl<'a> Builder<'a> {
+    /// Builder for the toolstrip body `body`.
+    pub(crate) fn new(ui: &'a mut egui::Ui, body: Rect) -> Builder<'a> {
+        Builder {
+            ui,
+            x: body.left() + 2.0,
+            top: body.top(),
+            bottom: body.bottom(),
+            actions: vec![],
+        }
+    }
+
+    /// Actions collected so far.
+    pub(crate) fn take_actions(&mut self) -> Vec<StripAction> {
+        std::mem::take(&mut self.actions)
+    }
+
     fn painter(&self) -> egui::Painter {
         self.ui.painter().clone()
     }
@@ -197,7 +293,7 @@ impl Builder<'_> {
     }
 
     /// Large button: 32 px icon with a (possibly two-line) label below.
-    fn big(&mut self, b: Btn) {
+    pub(crate) fn big(&mut self, b: Btn) {
         let font = FontId::proportional(12.0);
         let painter = self.painter();
         let galley = painter.layout_no_wrap(b.label.to_string(), font.clone(), theme::TEXT);
@@ -235,7 +331,7 @@ impl Builder<'_> {
     }
 
     /// Column of up to three small buttons (16 px icon + label).
-    fn smalls(&mut self, items: Vec<Btn>) {
+    pub(crate) fn smalls(&mut self, items: Vec<Btn>) {
         let font = FontId::proportional(12.0);
         let painter = self.painter();
         let w = items
@@ -282,7 +378,7 @@ impl Builder<'_> {
     }
 
     /// Wraps the buttons added by `f` in a captioned section.
-    fn section(&mut self, caption: &str, f: impl FnOnce(&mut Self)) {
+    pub(crate) fn section(&mut self, caption: &str, f: impl FnOnce(&mut Self)) {
         self.x += 6.0;
         let start = self.x;
         f(self);
@@ -321,62 +417,20 @@ impl Toolstrip {
             self.stop_text = format_number(info.stop_time);
             self.stop_rev = info.revision;
         }
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), TAB_H + BODY_H),
-            Sense::hover(),
-        );
+        let labels: Vec<&str> = StripTab::ALL.iter().map(|t| t.label()).collect();
+        let sel = StripTab::ALL
+            .iter()
+            .position(|t| *t == self.tab)
+            .unwrap_or(0);
+        let (rect, body, clicked) = strip_frame(ui, "main", &labels, sel);
+        if let Some(i) = clicked {
+            if let Some(t) = StripTab::ALL.get(i) {
+                self.tab = *t;
+            }
+        }
         let painter = ui.painter().clone();
         let tab_rect = Rect::from_min_size(rect.min, Vec2::new(rect.width(), TAB_H));
-        painter.rect_filled(tab_rect, CornerRadius::ZERO, theme::TAB_BAR);
-        let body = Rect::from_min_max(Pos2::new(rect.left(), tab_rect.bottom()), rect.max);
-        painter.rect_filled(body, CornerRadius::ZERO, theme::STRIP_BG);
-        painter.line_segment(
-            [body.left_bottom(), body.right_bottom()],
-            Stroke::new(1.0, theme::BORDER),
-        );
         let mut actions = vec![];
-
-        // Tabs.
-        let mut x = rect.left();
-        let tab_font = FontId::proportional(13.0);
-        for t in StripTab::ALL {
-            let g = painter.layout_no_wrap(t.label().to_string(), tab_font.clone(), Color32::WHITE);
-            let r = Rect::from_min_size(
-                Pos2::new(x, tab_rect.top() + 3.0),
-                Vec2::new(g.size().x + 32.0, TAB_H - 3.0),
-            );
-            let resp = ui.interact(r, ui.id().with(("tab", t.label())), Sense::click());
-            let selected = self.tab == t;
-            if selected {
-                painter.rect_filled(
-                    r,
-                    CornerRadius {
-                        nw: 2,
-                        ne: 2,
-                        sw: 0,
-                        se: 0,
-                    },
-                    theme::STRIP_BG,
-                );
-            } else if resp.hovered() {
-                painter.rect_filled(r, CornerRadius::ZERO, theme::TAB_HOVER);
-            }
-            painter.text(
-                r.center(),
-                Align2::CENTER_CENTER,
-                t.label(),
-                tab_font.clone(),
-                if selected {
-                    theme::TEXT
-                } else {
-                    Color32::WHITE
-                },
-            );
-            if resp.clicked() {
-                self.tab = t;
-            }
-            x = r.right() + 2.0;
-        }
 
         // Quick access toolbar (right side of the tab bar).
         let qa: [(UiIcon, bool, &str, StripAction); 3] = [
