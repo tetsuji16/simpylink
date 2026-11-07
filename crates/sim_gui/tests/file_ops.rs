@@ -142,6 +142,9 @@ fn missing_params_are_filled_with_defaults() {
     let mut st = AppState::new();
     st.open_path(&path).expect("opens");
     let gain = st.doc.model.root.block(BlockId(1)).expect("gain");
-    assert_eq!(gain.params.get("SampleTime").map(String::as_str), Some("-1"));
+    assert_eq!(
+        gain.params.get("SampleTime").map(String::as_str),
+        Some("-1")
+    );
     assert!(!st.doc.history.is_dirty());
 }
