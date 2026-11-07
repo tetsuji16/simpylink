@@ -28,7 +28,11 @@ fn key(k: egui::Key, pressed: bool, mods: egui::Modifiers) -> egui::Event {
 
 #[test]
 fn primary_down_is_offset_by_origin() {
-    let ev = button(egui::Pos2::new(110.0, 70.0), egui::PointerButton::Primary, true);
+    let ev = button(
+        egui::Pos2::new(110.0, 70.0),
+        egui::PointerButton::Primary,
+        true,
+    );
     assert_eq!(
         convert_event(&ev, ORIGIN),
         Some(CanvasEvent::PointerDown {
@@ -44,7 +48,11 @@ fn primary_down_is_offset_by_origin() {
 
 #[test]
 fn middle_up() {
-    let ev = button(egui::Pos2::new(110.0, 70.0), egui::PointerButton::Middle, false);
+    let ev = button(
+        egui::Pos2::new(110.0, 70.0),
+        egui::PointerButton::Middle,
+        false,
+    );
     assert_eq!(
         convert_event(&ev, ORIGIN),
         Some(CanvasEvent::PointerUp {
@@ -129,7 +137,10 @@ fn command_modifier_is_ctrl() {
 #[test]
 fn pointer_moved_and_gone() {
     assert_eq!(
-        convert_event(&egui::Event::PointerMoved(egui::Pos2::new(15.0, 25.0)), ORIGIN),
+        convert_event(
+            &egui::Event::PointerMoved(egui::Pos2::new(15.0, 25.0)),
+            ORIGIN
+        ),
         Some(CanvasEvent::PointerMove {
             pos: ScreenPos::new(5.0, 5.0),
             mods: Modifiers::default(),
