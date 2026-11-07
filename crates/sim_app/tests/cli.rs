@@ -157,3 +157,23 @@ fn run_command() {
     assert_eq!(o.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&o.stdout).lines().count(), 3);
 }
+
+#[test]
+fn run_with_relative_out_dir() {
+    let d = tempfile::tempdir().unwrap();
+    let o = bin()
+        .arg("run")
+        .arg(fx("step_gain_scope"))
+        .args(["--out-dir", "results"])
+        .current_dir(d.path())
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(o.status.code(), Some(0), "{combined}");
+    assert!(d.path().join("results/results.csv").exists());
+    assert!(!d.path().join("results/results").exists());
+}
