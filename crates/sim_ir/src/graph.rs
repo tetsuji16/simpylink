@@ -176,3 +176,120 @@ pub fn allocate_signals(
     }
     (sigs, map)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_core::ids::{BlockId, LineId};
+    use sim_core::json::from_json_str;
+    use sim_core::model::{Branch, Line, PortRef, TapPoint};
+
+    fn fixture(name: &str) -> Model {
+        let p = format!(
+            "{}/../../tests/fixtures/models/{name}.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        from_json_str(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    fn pr(b: u32, p: u32) -> PortRef {
+        PortRef {
+            block: BlockId(b),
+            port: p,
+        }
+    }
+
+    /// H-2: Connectivity on step_gain_scope fixture:
+    /// - driver == {Gain.1 -> Step.1, Scope.1 -> Gain.1}
+    /// - signals == [IrSignal{0, Step.1, "step_1"}, IrSignal{1, Gain.1, "gain_2"}]
+    /// - map == {Step.1 -> 0, Gain.1 -> 1}
+    #[test]
+    fn step_gain_scope_connectivity_and_signals() {
+        let m = fixture("step_gain_scope");
+        let conn = build_connectivity(&m);
+
+        assert_eq!(conn.driver.get(&pr(2, 1)), Some(&pr(1, 1)));
+        assert_eq!(conn.driver.get(&pr(3, 1)), Some(&pr(2, 1)));
+        assert_eq!(conn.driver.len(), 2);
+
+        let (signals, map) = allocate_signals(&m, &conn);
+        assert_eq!(signals.len(), 2);
+
+        assert_eq!(signals[0].id, SignalId(0));
+        assert_eq!(signals[0].source, pr(1, 1));
+        assert_eq!(signals[0].var_name, "step_1");
+
+        assert_eq!(signals[1].id, SignalId(1));
+        assert_eq!(signals[1].source, pr(2, 1));
+        assert_eq!(signals[1].var_name, "gain_2");
+
+        assert_eq!(map.get(&pr(1, 1)), Some(&SignalId(0)));
+        assert_eq!(map.get(&pr(2, 1)), Some(&SignalId(1)));
+        assert_eq!(map.len(), 2);
+    }
+
+    /// H-2: Branching lines:
+    /// Line{src Step.1, dst Gain.1, branches:[Branch{dst Scope.1}]}
+    /// -> driver maps both Gain.1 and Scope.1 to Step.1
+    #[test]
+    fn branching_line_connectivity() {
+        let mut m = fixture("step_gain_scope");
+        // Remove line 2 (Gain -> Scope) and add branch to line 1 (Step -> Scope)
+        m.root.lines.retain(|l| l.id == LineId(1));
+        m.root.lines[0].branches.push(Branch {
+            tap: TapPoint { segment: 0, t: 0.5 },
+            points: vec![],
+            dst: Some(pr(3, 1)),
+            branches: vec![],
+        });
+
+        let conn = build_connectivity(&m);
+        assert_eq!(conn.driver.get(&pr(2, 1)), Some(&pr(1, 1)));
+        assert_eq!(conn.driver.get(&pr(3, 1)), Some(&pr(1, 1)));
+        assert_eq!(conn.driver.len(), 2);
+    }
+
+    /// J: Abnormal cases:
+    /// - dst block doesn't exist -> not in driver
+    /// - port_counts is Err -> not in counts, no signals allocated
+    /// - empty System -> driver empty, signals empty
+    #[test]
+    fn abnormal_cases() {
+        // Line pointing to non-existent block
+        let mut m = fixture("step_gain_scope");
+        m.root.lines.push(Line {
+            id: LineId(99),
+            src: pr(1, 1),
+            points: vec![],
+            dst: Some(pr(999, 1)),
+            branches: vec![],
+            name: String::new(),
+        });
+        let conn = build_connectivity(&m);
+        assert!(!conn.driver.contains_key(&pr(999, 1)));
+
+        // Block with unknown block type (port_counts Err)
+        let mut bad_block = m.root.blocks[0].clone();
+        bad_block.sid = BlockId(88);
+        bad_block.name = "UnknownBlock".into();
+        bad_block.block_type = "NonExistentBlockType".into();
+        m.root.blocks.push(bad_block);
+
+        let conn2 = build_connectivity(&m);
+        assert!(!conn2.counts.contains_key(&BlockId(88)));
+        let (signals, map) = allocate_signals(&m, &conn2);
+        assert!(!map.contains_key(&pr(88, 1)));
+        assert!(signals.iter().all(|s| s.source.block != BlockId(88)));
+
+        // Empty System
+        let mut empty_model = m.clone();
+        empty_model.root.blocks.clear();
+        empty_model.root.lines.clear();
+        let empty_conn = build_connectivity(&empty_model);
+        assert!(empty_conn.driver.is_empty());
+        assert!(empty_conn.counts.is_empty());
+        let (empty_signals, empty_map) = allocate_signals(&empty_model, &empty_conn);
+        assert!(empty_signals.is_empty());
+        assert!(empty_map.is_empty());
+    }
+}
