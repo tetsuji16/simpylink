@@ -226,5 +226,34 @@ mod tests {
             loop_message(&b(&[2, 3]), &names),
             "algebraic loop: Gain(2) -> Sum(3) -> Gain(2)"
         );
+        let names_g = BTreeMap::from([(BlockId(5), "G".to_string())]);
+        assert_eq!(
+            loop_message(&b(&[5]), &names_g),
+            "algebraic loop: G(5) -> G(5)"
+        );
+
+        // Edges with nodes not in nodes are ignored
+        assert_eq!(
+            sorted_order(&b(&[1, 2]), &e(&[(1, 2), (999, 1), (2, 888)])),
+            Ok(b(&[1, 2]))
+        );
+    }
+
+    #[test]
+    fn df_edges_fixture() {
+        let p = format!(
+            "{}/../../tests/fixtures/models/step_gain_scope.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let m: sim_core::model::Model =
+            sim_core::json::from_json_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+        let conn = crate::graph::build_connectivity(&m);
+        // Gain and Scope are direct-feedthrough; Step is not
+        let df = BTreeMap::from([(BlockId(1), false), (BlockId(2), true), (BlockId(3), true)]);
+        let edges = df_edges(&conn, &df);
+        assert_eq!(
+            edges,
+            vec![(BlockId(1), BlockId(2)), (BlockId(2), BlockId(3))]
+        );
     }
 }
