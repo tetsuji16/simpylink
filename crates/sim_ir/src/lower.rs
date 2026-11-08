@@ -292,3 +292,200 @@ pub fn lower_block(block: &Block, is_root: bool, path: &SystemPath) -> Result<Lo
         sample_time: st,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_core::ids::BlockId;
+
+    fn block(sid: u32, name: &str, block_type: &str, params: &[(&str, &str)]) -> Block {
+        Block {
+            sid: BlockId(sid),
+            name: name.into(),
+            block_type: block_type.into(),
+            position: sim_core::geom::Rect::new(0.0, 0.0, 30.0, 30.0),
+            orientation: sim_core::model::Orientation::Right,
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            system: None,
+        }
+    }
+
+    #[test]
+    fn parse_sample_time_cases() {
+        assert_eq!(parse_sample_time("-1").unwrap(), None);
+        assert_eq!(
+            parse_sample_time("0").unwrap(),
+            Some(SampleTime::Continuous)
+        );
+        assert_eq!(
+            parse_sample_time("inf").unwrap(),
+            Some(SampleTime::Constant)
+        );
+        assert_eq!(
+            parse_sample_time("Inf").unwrap(),
+            Some(SampleTime::Constant)
+        );
+        assert_eq!(
+            parse_sample_time("0.1").unwrap(),
+            Some(SampleTime::Discrete {
+                period: 0.1,
+                offset: 0.0
+            })
+        );
+        assert_eq!(
+            parse_sample_time("[0.5, 0.1]").unwrap(),
+            Some(SampleTime::Discrete {
+                period: 0.5,
+                offset: 0.1
+            })
+        );
+
+        // Invalid cases
+        assert!(parse_sample_time("-2").is_err());
+        assert!(parse_sample_time("[1, 1]").is_err());
+        assert!(parse_sample_time("x").is_err());
+    }
+
+    #[test]
+    fn direct_feedthrough_checks() {
+        assert!(IrBlockKind::Gain { gain: 1.0 }.direct_feedthrough());
+        assert!(IrBlockKind::Sum { signs: vec![1, -1] }.direct_feedthrough());
+        assert!(IrBlockKind::Scope.direct_feedthrough());
+        assert!(IrBlockKind::Outport { port: 1 }.direct_feedthrough());
+        assert!(!IrBlockKind::Constant { value: 1.0 }.direct_feedthrough());
+        assert!(!IrBlockKind::Step {
+            time: 1.0,
+            before: 0.0,
+            after: 1.0
+        }
+        .direct_feedthrough());
+    }
+
+    #[test]
+    fn lower_mvp_blocks() {
+        let root = SystemPath::root();
+
+        // Constant
+        let b = block(
+            1,
+            "Const",
+            "Constant",
+            &[("Value", "2.5"), ("SampleTime", "inf")],
+        );
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Constant { value: 2.5 });
+        assert_eq!(l.sample_time, Some(SampleTime::Constant));
+
+        // Step
+        let b = block(
+            2,
+            "Step",
+            "Step",
+            &[
+                ("Time", "1"),
+                ("Before", "0"),
+                ("After", "2"),
+                ("SampleTime", "0"),
+            ],
+        );
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(
+            l.kind,
+            IrBlockKind::Step {
+                time: 1.0,
+                before: 0.0,
+                after: 2.0
+            }
+        );
+        assert_eq!(l.sample_time, Some(SampleTime::Continuous));
+
+        // Gain scalar and expr
+        let b = block(3, "Gain", "Gain", &[("Gain", "3"), ("SampleTime", "-1")]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Gain { gain: 3.0 });
+        assert_eq!(l.sample_time, None);
+
+        let b = block(
+            4,
+            "GainPi",
+            "Gain",
+            &[("Gain", "2*pi"), ("SampleTime", "-1")],
+        );
+        let l = lower_block(&b, true, &root).unwrap();
+        let IrBlockKind::Gain { gain } = l.kind else {
+            panic!()
+        };
+        assert!((gain - 2.0 * std::f64::consts::PI).abs() < 1e-12);
+
+        // Sum signs
+        let b = block(5, "Sum1", "Sum", &[("Inputs", "|+-")]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Sum { signs: vec![1, -1] });
+
+        let b = block(6, "Sum2", "Sum", &[("Inputs", "+-+")]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(
+            l.kind,
+            IrBlockKind::Sum {
+                signs: vec![1, -1, 1]
+            }
+        );
+
+        let b = block(7, "Sum3", "Sum", &[("Inputs", "3")]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(
+            l.kind,
+            IrBlockKind::Sum {
+                signs: vec![1, 1, 1]
+            }
+        );
+
+        // Scope
+        let b = block(8, "Scope", "Scope", &[]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Scope);
+        assert_eq!(l.sample_time, None);
+
+        // Outport root
+        let b = block(9, "Out1", "Outport", &[("Port", "2")]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Outport { port: 2 });
+    }
+
+    #[test]
+    fn lower_abnormal_cases() {
+        let root = SystemPath::root();
+
+        // Unknown identifier in Gain
+        let b = block(1, "Gain", "Gain", &[("Gain", "K")]);
+        let err = lower_block(&b, true, &root).unwrap_err();
+        assert_eq!(err.code, E_PARAM_EVAL);
+        assert!(err.message.contains("unknown identifier 'K'"));
+        assert_eq!(err.location.block, Some(BlockId(1)));
+
+        // Non-scalar matrix in Gain
+        let b = block(2, "Gain", "Gain", &[("Gain", "[1 2]")]);
+        let err = lower_block(&b, true, &root).unwrap_err();
+        assert_eq!(err.code, E_PARAM_EVAL);
+        assert!(err.message.contains("expected a scalar"));
+
+        // Missing param in Gain
+        let b = block(3, "Gain", "Gain", &[]);
+        let err = lower_block(&b, true, &root).unwrap_err();
+        assert_eq!(err.code, E_PARAM_EVAL);
+        assert!(err.message.contains("is missing"));
+
+        // Inport root unsupported
+        let b = block(4, "In1", "Inport", &[("Port", "1")]);
+        let err = lower_block(&b, true, &root).unwrap_err();
+        assert_eq!(err.code, E_UNSUPPORTED_FEATURE);
+
+        // Unsupported block type
+        let b = block(5, "Unknown", "NoSuchBlock", &[]);
+        let err = lower_block(&b, true, &root).unwrap_err();
+        assert_eq!(err.code, E_UNSUPPORTED_BLOCK);
+    }
+}
