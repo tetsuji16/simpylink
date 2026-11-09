@@ -1,7 +1,7 @@
 //! Command line interface (DES-01 §5).
+use crate::report::print_diagnostics;
 use clap::{Parser, Subcommand};
 use sim_codegen_py::{generate, CodegenOptions};
-use sim_core::diag::Diagnostic;
 use sim_core::model::Model;
 use sim_runner::{
     check_environment, discover_python, load_results, run_blocking, RunStatus, RunnerConfig,
@@ -53,43 +53,6 @@ pub const EXIT_RUN_FAILED: i32 = 1;
 pub const EXIT_MODEL_ERROR: i32 = 3;
 pub const EXIT_IO_ERROR: i32 = 4;
 pub const EXIT_PYTHON_ENV: i32 = 5;
-
-/// Prints diagnostics to stderr.
-pub fn print_diagnostics(diags: &[Diagnostic], model: &Model) {
-    for d in diags {
-        let mut line = format!("{}[{}]: {}", sev(d), d.code, d.message);
-        if let Some(b) = d.location.block {
-            let name = find_name(model, b).unwrap_or_default();
-            line.push_str(&format!(" (block {b} \"{name}\")"));
-        }
-        eprintln!("{line}");
-    }
-}
-
-fn sev(d: &Diagnostic) -> &'static str {
-    match d.severity {
-        sim_core::diag::Severity::Error => "error",
-        sim_core::diag::Severity::Warning => "warning",
-        sim_core::diag::Severity::Info => "info",
-    }
-}
-
-fn find_name(m: &Model, sid: sim_core::ids::BlockId) -> Option<String> {
-    fn rec(s: &sim_core::model::System, sid: sim_core::ids::BlockId) -> Option<String> {
-        for b in &s.blocks {
-            if b.sid == sid {
-                return Some(b.name.clone());
-            }
-            if let Some(c) = &b.system {
-                if let Some(n) = rec(c, sid) {
-                    return Some(n);
-                }
-            }
-        }
-        None
-    }
-    rec(&m.root, sid)
-}
 
 fn build(model_path: &Path) -> Result<(Model, sim_codegen_py::GeneratedCode), i32> {
     let model = sim_core::json::load_from_path(model_path).map_err(|e| {
