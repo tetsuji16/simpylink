@@ -1,122 +1,133 @@
-//! `simpylink codegen` binary tests (Issue #61, DES-04 §5).
+//! `simpylink codegen` binary tests (Issue #61, sections H and J).
+//!
+//! Every case runs the real binary so that the exit code and the stderr text
+//! are covered end to end.
 use sim_core::ids::LineId;
-use sim_core::json::{load_from_path, save_to_path};
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_simpylink"))
 }
 
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/models")
-        .join(format!("{name}.json"))
+fn fixtures() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures")
 }
 
-#[test]
-fn writes_file_and_reports_the_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = dir.path().join("sub/dir/a.py");
-    let result = bin()
+fn model(name: &str) -> PathBuf {
+    fixtures().join("models").join(format!("{name}.json"))
+}
+
+fn expected(name: &str) -> PathBuf {
+    fixtures().join("expected").join(format!("{name}.py"))
+}
+
+/// The `Generator:` line embeds the CLI version, which differs from the golden file.
+fn strip_generator(s: &str) -> String {
+    s.lines()
+        .filter(|l| !l.starts_with("Generator:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).to_string()
+}
+
+fn codegen(src: &Path, out: &Path) -> Output {
+    bin()
         .arg("codegen")
-        .arg(fixture("step_gain_scope"))
+        .arg(src)
         .arg("-o")
-        .arg(&output)
+        .arg(out)
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+/// H-1: a valid model generates the golden file (minus the `Generator:` line).
+#[test]
+fn h1_generates_golden_file() {
+    let d = tempfile::tempdir().unwrap();
+    let out = d.path().join("a.py");
+    let o = codegen(&model("step_gain_scope"), &out);
+
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
     assert_eq!(
-        result.status.code(),
-        Some(0),
+        String::from_utf8_lossy(&o.stdout).trim_end(),
+        format!("wrote {}", out.display())
+    );
+    let got = std::fs::read_to_string(&out).unwrap();
+    let want = std::fs::read_to_string(expected("step_gain_scope")).unwrap();
+    assert_eq!(strip_generator(&got), strip_generator(&want));
+}
+
+/// H-2: an algebraic loop reports the diagnostic and writes no file.
+#[test]
+fn h2_algebraic_loop_writes_no_file() {
+    let d = tempfile::tempdir().unwrap();
+    let out = d.path().join("b.py");
+    let o = codegen(&model("algebraic_loop"), &out);
+
+    assert_eq!(o.status.code(), Some(3), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains(
+            "error[E_ALGEBRAIC_LOOP]: algebraic loop: Gain(2) -> Sum(3) -> Gain(2) (block 2 \"Gain\")"
+        ),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        stderr(&o)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&result.stdout).trim(),
-        format!("wrote {}", output.display())
-    );
-    assert!(output.exists());
-    let got = std::fs::read_to_string(&output).unwrap();
-    let expected = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/expected/step_gain_scope.py");
-    let want = std::fs::read_to_string(expected).unwrap();
-    let strip = |s: &str| {
-        s.lines()
-            .filter(|l| !l.starts_with("Generator:"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    assert_eq!(strip(&got), strip(&want));
+    assert!(!out.exists());
 }
 
+/// H-3: a missing model file is an I/O error.
 #[test]
-fn algebraic_loop_is_reported_without_writing_a_file() {
-    let dir = tempfile::tempdir().unwrap();
-    let output = dir.path().join("b.py");
-    let result = bin()
-        .arg("codegen")
-        .arg(fixture("algebraic_loop"))
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert_eq!(result.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&result.stderr).contains(
-        "error[E_ALGEBRAIC_LOOP]: algebraic loop: Gain(2) -> Sum(3) -> Gain(2) (block 2 \"Gain\")"
-    ));
-    assert!(!output.exists());
+fn h3_missing_model_file() {
+    let d = tempfile::tempdir().unwrap();
+    let o = codegen(Path::new("nope.json"), &d.path().join("x.py"));
+
+    assert_eq!(o.status.code(), Some(4), "{}", stderr(&o));
+    assert!(stderr(&o).starts_with("error[E_IO]:"), "{}", stderr(&o));
 }
 
+/// H-4: missing parent directories are created.
 #[test]
-fn emits_warning_for_unconnected_input() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut model = load_from_path(&fixture("sum_constants")).unwrap();
-    model.root.lines.retain(|l| l.id != LineId(2));
-    let model_path = dir.path().join("partial.json");
-    save_to_path(&model, &model_path).unwrap();
-    let output = dir.path().join("partial.py");
-    let result = bin()
-        .arg("codegen")
-        .arg(&model_path)
-        .arg("-o")
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert_eq!(
-        result.status.code(),
-        Some(0),
+fn h4_creates_output_directories() {
+    let d = tempfile::tempdir().unwrap();
+    let out = d.path().join("sub/dir/c.py");
+    let o = codegen(&model("step_gain_scope"), &out);
+
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(out.exists());
+}
+
+/// H-5: warnings go to stderr and the file is still written.
+#[test]
+fn h5_warnings_are_reported() {
+    let d = tempfile::tempdir().unwrap();
+    // sum_constants with the Constant1 -> Sum.2 line removed.
+    let mut m = sim_core::json::load_from_path(&model("sum_constants")).unwrap();
+    m.root.lines.retain(|l| l.id != LineId(2));
+    let src = d.path().join("sum_warn.json");
+    sim_core::json::save_to_path(&m, &src).unwrap();
+
+    let out = d.path().join("warn.py");
+    let o = codegen(&src, &out);
+
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    assert!(
+        stderr(&o).contains("warning[W_UNCONNECTED_INPUT]"),
         "{}",
-        String::from_utf8_lossy(&result.stderr)
+        stderr(&o)
     );
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("warning[W_UNCONNECTED_INPUT]"), "{stderr}");
-    assert!(output.exists());
+    assert!(out.exists());
 }
 
+/// J: an output path that is an existing directory is an I/O error.
 #[test]
-fn missing_model_is_an_io_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let result = bin()
-        .arg("codegen")
-        .arg("nope.json")
-        .arg("-o")
-        .arg(dir.path().join("x.py"))
-        .output()
-        .unwrap();
-    assert_eq!(result.status.code(), Some(4));
-    assert!(String::from_utf8_lossy(&result.stderr).contains("error[E_IO]:"));
-}
+fn j_output_path_is_directory() {
+    let d = tempfile::tempdir().unwrap();
+    let o = codegen(&model("step_gain_scope"), d.path());
 
-#[test]
-fn output_directory_is_an_io_error() {
-    let dir = tempfile::tempdir().unwrap();
-    let result = bin()
-        .arg("codegen")
-        .arg(fixture("step_gain_scope"))
-        .arg("-o")
-        .arg(dir.path())
-        .output()
-        .unwrap();
-    assert_eq!(result.status.code(), Some(4));
-    assert!(String::from_utf8_lossy(&result.stderr).contains("error[E_IO]:"));
+    assert_eq!(o.status.code(), Some(4), "{}", stderr(&o));
+    assert!(stderr(&o).starts_with("error[E_IO]:"), "{}", stderr(&o));
 }
