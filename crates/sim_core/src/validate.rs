@@ -124,6 +124,13 @@ fn check_system(
                 format!("unknown block type '{}'", b.block_type),
                 loc,
             ));
+            counts.insert(
+                b.sid,
+                port_counts(b).unwrap_or(PortCounts {
+                    inputs: 0,
+                    outputs: 0,
+                }),
+            );
             continue;
         };
         for ps in s.params {

@@ -2996,6 +2996,7 @@ version = "0.2.0"
 dependencies = [
  "clap",
  "eframe",
+ "serde_json",
  "sim_codegen_py",
  "sim_core",
  "sim_gui",
@@ -3075,6 +3076,7 @@ name = "sim_slx"
 version = "0.2.0"
 dependencies = [
  "quick-xml",
+ "serde_json",
  "sim_core",
  "tempfile",
  "thiserror 2.0.21",

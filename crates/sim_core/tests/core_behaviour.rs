@@ -5,7 +5,7 @@ use sim_core::edit::*;
 use sim_core::geom::{Point, Rect};
 use sim_core::ids::{BlockId, LineId};
 use sim_core::json::from_json_str;
-use sim_core::library::new_block;
+use sim_core::library::{new_block, port_counts, PortCounts, OPAQUE_INPUTS, OPAQUE_OUTPUTS};
 use sim_core::model::*;
 use sim_core::path::SystemPath;
 use sim_core::validate::validate_model;
@@ -29,6 +29,71 @@ fn pr(b: u32, p: u32) -> PortRef {
         block: BlockId(b),
         port: p,
     }
+}
+
+#[test]
+fn opaque_block_port_counts_are_used_for_validation() {
+    let mut block = Block {
+        sid: BlockId(1),
+        block_type: "Terminator".into(),
+        name: "T".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [(OPAQUE_INPUTS.to_string(), "1".to_string())]
+            .into_iter()
+            .collect(),
+        system: None,
+    };
+    assert_eq!(
+        port_counts(&block).unwrap(),
+        PortCounts {
+            inputs: 1,
+            outputs: 0
+        }
+    );
+    block.params.insert(OPAQUE_OUTPUTS.into(), "x".into());
+    assert!(port_counts(&block).is_err());
+    block.params.clear();
+    assert!(port_counts(&block).is_err());
+
+    let source = Block {
+        sid: BlockId(2),
+        block_type: "Constant".into(),
+        name: "C".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [
+            ("Value".into(), "1".into()),
+            ("SampleTime".into(), "inf".into()),
+        ]
+        .into_iter()
+        .collect(),
+        system: None,
+    };
+    let mut model = Model::new("opaque");
+    model.root.blocks = vec![
+        source,
+        Block {
+            sid: BlockId(1),
+            block_type: "Terminator".into(),
+            name: "T".into(),
+            position: Rect::new(40.0, 0.0, 70.0, 30.0),
+            orientation: Orientation::Right,
+            params: [(OPAQUE_INPUTS.into(), "1".into())].into_iter().collect(),
+            system: None,
+        },
+    ];
+    model.root.lines.push(Line {
+        id: LineId(1),
+        src: pr(2, 1),
+        points: vec![],
+        dst: Some(pr(1, 1)),
+        branches: vec![],
+        name: String::new(),
+    });
+    let diagnostics = validate_model(&model);
+    assert!(diagnostics.iter().any(|d| d.code == "E_UNKNOWN_BLOCK_TYPE"));
+    assert!(!diagnostics.iter().any(|d| d.code == "E_PORT_OUT_OF_RANGE"));
 }
 
 #[test]

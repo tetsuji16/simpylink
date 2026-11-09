@@ -40,6 +40,11 @@ pub struct PortCounts {
     pub outputs: u32,
 }
 
+/// Reserved input-port count parameter for opaque imported blocks.
+pub const OPAQUE_INPUTS: &str = "__opaque_inputs";
+/// Reserved output-port count parameter for opaque imported blocks.
+pub const OPAQUE_OUTPUTS: &str = "__opaque_outputs";
+
 /// Port count function.
 pub type PortsFn = fn(&BTreeMap<String, String>) -> Result<PortCounts, String>;
 
@@ -520,8 +525,31 @@ pub fn spec(block_type: &str) -> Option<&'static BlockSpec> {
 
 /// Port counts of a block.
 pub fn port_counts(block: &Block) -> Result<PortCounts, String> {
-    let s = spec(&block.block_type)
-        .ok_or_else(|| format!("unknown block type '{}'", block.block_type))?;
+    let Some(s) = spec(&block.block_type) else {
+        let input = block
+            .params
+            .get(OPAQUE_INPUTS)
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| format!("{OPAQUE_INPUTS} must be a non-negative integer"))
+            })
+            .transpose()?;
+        let output = block
+            .params
+            .get(OPAQUE_OUTPUTS)
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| format!("{OPAQUE_OUTPUTS} must be a non-negative integer"))
+            })
+            .transpose()?;
+        if input.is_some() || output.is_some() {
+            return Ok(PortCounts {
+                inputs: input.unwrap_or(0),
+                outputs: output.unwrap_or(0),
+            });
+        }
+        return Err(format!("unknown block type '{}'", block.block_type));
+    };
     if let Some(sys) = &block.system {
         let n = |t: &str| sys.blocks.iter().filter(|b| b.block_type == t).count() as u32;
         return Ok(PortCounts {
@@ -684,6 +712,7 @@ pub fn new_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn blk(t: &str, params: &[(&str, &str)]) -> Block {
         Block {
             sid: BlockId(1),
