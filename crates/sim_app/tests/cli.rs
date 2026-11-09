@@ -56,6 +56,18 @@ fn parsing() {
 }
 
 #[test]
+fn version_and_unknown_subcommand() {
+    let output = bin().arg("--version").output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("simpylink {}", env!("CARGO_PKG_VERSION"))
+    );
+    let output = bin().arg("unknown").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn codegen_command() {
     let d = tempfile::tempdir().unwrap();
     let out = d.path().join("sub/dir/a.py");
