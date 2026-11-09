@@ -226,6 +226,174 @@ fn composite_sids_do_not_collide_and_are_restored() {
 }
 
 #[test]
+fn block_rotation_and_mirror_map_to_orientations() {
+    use sim_core::model::Orientation::{Down, Left, Right, Up};
+
+    let cases = [
+        ("0", "off", Right),
+        ("0", "on", Left),
+        ("90", "off", Down),
+        ("90", "on", Up),
+        ("180", "off", Left),
+        ("180", "on", Right),
+        ("270", "off", Up),
+        ("270", "on", Down),
+    ];
+    let blocks = cases
+        .iter()
+        .enumerate()
+        .map(|(index, (rotation, mirror, _))| {
+            format!(
+                "<Block BlockType=\"Gain\" Name=\"G{index}\" SID=\"{}\"><P Name=\"BlockRotation\">{rotation}</P><P Name=\"BlockMirror\">{mirror}</P></Block>",
+                index + 1
+            )
+        })
+        .collect::<String>();
+    let root = format!("<System>{blocks}</System>");
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root.as_bytes()),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    for (block, (_, _, expected)) in imp.model.root.blocks.iter().zip(cases) {
+        assert_eq!(block.orientation, expected);
+    }
+    assert!(imp.report.info.iter().any(|line| {
+        line == "2 blocks rotated by 180 degrees were mapped to a flip; port order may differ"
+    }));
+}
+
+#[test]
+fn legacy_missing_and_invalid_block_orientation_values_are_handled() {
+    let make_import = |block: &str| {
+        let root = format!("<System>{block}</System>");
+        let z = make_zip(&[
+            ("[Content_Types].xml", CT),
+            ("simulink/systems/system_root.xml", root.as_bytes()),
+        ]);
+        read_slx_bytes(&z, "m").unwrap()
+    };
+
+    let legacy = make_import(
+        "<Block BlockType=\"Gain\" Name=\"G\" SID=\"1\"><P Name=\"Orientation\">up</P></Block>",
+    );
+    assert_eq!(
+        legacy.model.root.blocks[0].orientation,
+        sim_core::model::Orientation::Up
+    );
+    let missing = make_import("<Block BlockType=\"Gain\" Name=\"G\" SID=\"1\"/>");
+    assert_eq!(
+        missing.model.root.blocks[0].orientation,
+        sim_core::model::Orientation::Right
+    );
+
+    for value in ["45", "not-a-number"] {
+        let invalid = make_import(&format!(
+            "<Block BlockType=\"Gain\" Name=\"G\" SID=\"1\"><P Name=\"BlockRotation\">{value}</P></Block>"
+        ));
+        assert_eq!(
+            invalid.model.root.blocks[0].orientation,
+            sim_core::model::Orientation::Right
+        );
+        assert_eq!(invalid.report.warnings.len(), 1);
+    }
+}
+
+#[test]
+fn new_and_preserved_exports_roundtrip_block_orientations() {
+    use sim_core::model::Orientation::{Down, Left, Right, Up};
+
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[0, 0, 30, 30]</P><P Name="Orientation">right</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let mut imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(
+        write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap(),
+        write_package(&imp.preserved.package).unwrap()
+    );
+    let new_orientations = [Right, Left, Down, Up];
+    imp.model.root.blocks = new_orientations
+        .into_iter()
+        .enumerate()
+        .map(|(index, orientation)| {
+            let mut block = imp.model.root.blocks[0].clone();
+            block.sid = sim_core::ids::BlockId(index as u32 + 1);
+            block.name = format!("G{index}");
+            block.orientation = orientation;
+            block
+        })
+        .collect();
+    let generated = write_slx_bytes(&imp.model, None).unwrap();
+    let generated_model = read_slx_bytes(&generated, "m").unwrap().model;
+    assert_eq!(
+        generated_model
+            .root
+            .blocks
+            .iter()
+            .map(|block| block.orientation)
+            .collect::<Vec<_>>(),
+        new_orientations
+    );
+    let generated_package = read_package(&generated).unwrap();
+    let generated_root = parse_xml(
+        "simulink/blockdiagram.xml",
+        &generated_package
+            .part("simulink/blockdiagram.xml")
+            .unwrap()
+            .data,
+    )
+    .unwrap();
+    let generated_system = generated_root
+        .root()
+        .unwrap()
+        .children_named("Model")
+        .next()
+        .unwrap()
+        .children_named("System")
+        .next()
+        .unwrap();
+    let encoded: Vec<_> = generated_system
+        .children_named("Block")
+        .map(|block| {
+            let params = block
+                .children_named("P")
+                .filter_map(|p| Some((p.attr("Name")?, p.text())))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            (
+                params.get("BlockRotation").cloned(),
+                params.get("BlockMirror").cloned(),
+                params.contains_key("Orientation"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        encoded,
+        vec![
+            (None, None, false),
+            (None, Some("on".into()), false),
+            (Some("90".into()), None, false),
+            (Some("270".into()), None, false),
+        ]
+    );
+
+    imp.model.root.blocks[0].orientation = Up;
+    let preserved = write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap();
+    let preserved_model = read_slx_bytes(&preserved, "m").unwrap().model;
+    assert_eq!(preserved_model.root.blocks[0].orientation, Up);
+    let package = read_package(&preserved).unwrap();
+    let xml = String::from_utf8_lossy(
+        &package
+            .part("simulink/systems/system_root.xml")
+            .unwrap()
+            .data,
+    );
+    assert!(xml.contains("<P Name=\"BlockRotation\">270</P>"));
+    assert!(!xml.contains("Name=\"Orientation\""));
+}
+
+#[test]
 fn unchanged_import_export_keeps_every_original_part() {
     let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="Gain">3</P><P Name="ZOrder">2</P></Block></System>"#;
     let z = make_zip(&[

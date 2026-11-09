@@ -190,6 +190,213 @@ fn p_map(e: &XmlElement) -> BTreeMap<String, String> {
         .collect()
 }
 
+fn orientation_from_slx(
+    rotation: Option<&str>,
+    mirror: Option<&str>,
+    legacy: Option<&str>,
+) -> (Orientation, bool) {
+    if rotation.is_none() && mirror.is_none() {
+        return (
+            match legacy {
+                Some("left") => Orientation::Left,
+                Some("up") => Orientation::Up,
+                Some("down") => Orientation::Down,
+                _ => Orientation::Right,
+            },
+            false,
+        );
+    }
+    let turns = match rotation.unwrap_or("0") {
+        "0" => 0,
+        "90" => 1,
+        "180" => 2,
+        "270" => 3,
+        _ => return (Orientation::Right, false),
+    };
+    let mut orientation = Orientation::Right;
+    for _ in 0..turns {
+        orientation = orientation.rotated_cw();
+    }
+    if mirror == Some("on") {
+        orientation = orientation.flipped();
+    }
+    (orientation, turns == 2)
+}
+
+fn orientation_to_slx(orientation: Orientation) -> (Option<&'static str>, bool) {
+    match orientation {
+        Orientation::Right => (None, false),
+        Orientation::Left => (None, true),
+        Orientation::Down => (Some("90"), false),
+        Orientation::Up => (Some("270"), false),
+    }
+}
+
+fn set_orientation_xml(block: &mut XmlElement, orientation: Orientation) {
+    block.children.retain(|node| match node {
+        XmlNode::Element(element) if element.name == "P" => !matches!(
+            element.attr("Name").as_deref(),
+            Some("BlockRotation" | "BlockMirror" | "Orientation")
+        ),
+        _ => true,
+    });
+    let (rotation, mirror) = orientation_to_slx(orientation);
+    let at = block
+        .children
+        .iter()
+        .position(|node| {
+            matches!(node, XmlNode::Element(element) if element.name == "P" && element.attr("Name").as_deref() == Some("Position"))
+        })
+        .map(|index| index + 1)
+        .unwrap_or(block.children.len());
+    let mut values = Vec::new();
+    if let Some(rotation) = rotation {
+        values.push(p_el("BlockRotation", rotation));
+    }
+    if mirror {
+        values.push(p_el("BlockMirror", "on"));
+    }
+    for (offset, value) in values.into_iter().enumerate() {
+        block.children.insert(at + offset, XmlNode::Element(value));
+    }
+}
+
+fn patch_orientations_in_system(
+    xml: &mut XmlElement,
+    before: &System,
+    after: &System,
+    sid_map: &BTreeMap<BlockId, String>,
+    split: bool,
+    pkg: &mut OpcPackage,
+) -> Result<bool, SlxError> {
+    let mut changed = false;
+    for node in &mut xml.children {
+        let XmlNode::Element(block_xml) = node else {
+            continue;
+        };
+        if block_xml.name != "Block" {
+            continue;
+        }
+        let Some(sid_text) = block_xml.attr("SID") else {
+            continue;
+        };
+        let id = sid_map
+            .iter()
+            .find_map(|(id, sid)| (sid == &sid_text).then_some(*id))
+            .or_else(|| sid_text.parse::<u32>().ok().map(BlockId));
+        let Some(id) = id else {
+            continue;
+        };
+        let old = before.blocks.iter().find(|block| block.sid == id);
+        let new = after.blocks.iter().find(|block| block.sid == id);
+        if let Some(new) = new {
+            if old.is_none_or(|old| old.orientation != new.orientation) {
+                set_orientation_xml(block_xml, new.orientation);
+                changed = true;
+            }
+            if let Some(new_child) = &new.system {
+                if split {
+                    let name = sid_map
+                        .get(&new.sid)
+                        .cloned()
+                        .unwrap_or_else(|| new.sid.0.to_string());
+                    let part = format!("simulink/systems/system_{name}.xml");
+                    if let Some(original) = pkg.part(&part).map(|p| p.data.clone()) {
+                        let mut doc = parse_xml(&part, &original)?;
+                        let updated = if let Some(root) = doc.root_mut() {
+                            patch_orientations_in_system(
+                                root,
+                                old.and_then(|block| block.system.as_ref())
+                                    .unwrap_or(&System::default()),
+                                new_child,
+                                sid_map,
+                                true,
+                                pkg,
+                            )?
+                        } else {
+                            false
+                        };
+                        if updated {
+                            pkg.set_part(&part, write_xml(&doc));
+                        }
+                    }
+                } else if let Some(child_xml) =
+                    block_xml.children.iter_mut().find_map(|node| match node {
+                        XmlNode::Element(element)
+                            if element.name == "System" && element.attr("Ref").is_none() =>
+                        {
+                            Some(element)
+                        }
+                        _ => None,
+                    })
+                {
+                    changed |= patch_orientations_in_system(
+                        child_xml,
+                        old.and_then(|block| block.system.as_ref())
+                            .unwrap_or(&System::default()),
+                        new_child,
+                        sid_map,
+                        false,
+                        pkg,
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(changed)
+}
+
+fn patch_orientations(
+    pkg: &mut OpcPackage,
+    model: &Model,
+    preserved: &PreservedData,
+) -> Result<(), SlxError> {
+    let part = if preserved.split_systems {
+        ROOT_SYS
+    } else {
+        BD
+    };
+    if model == &preserved.baseline {
+        return Ok(());
+    }
+    let Some(original) = pkg.part(part).map(|p| p.data.clone()) else {
+        return Ok(());
+    };
+    let mut doc = parse_xml(part, &original)?;
+    let Some(root) = doc.root_mut() else {
+        return Ok(());
+    };
+    let system = if preserved.split_systems {
+        Some(root)
+    } else {
+        root.children.iter_mut().find_map(|node| match node {
+            XmlNode::Element(model) if model.name == "Model" => {
+                model.children.iter_mut().find_map(|node| match node {
+                    XmlNode::Element(system) if system.name == "System" => Some(system),
+                    _ => None,
+                })
+            }
+            _ => None,
+        })
+    };
+    let changed = if let Some(system) = system {
+        patch_orientations_in_system(
+            system,
+            &preserved.baseline.root,
+            &model.root,
+            &preserved.sid_map,
+            preserved.split_systems,
+            pkg,
+        )?
+    } else {
+        false
+    };
+    if changed {
+        pkg.set_part(part, write_xml(&doc));
+    }
+    Ok(())
+}
+
 fn parse_num_list(s: &str) -> Vec<f64> {
     s.trim()
         .trim_start_matches('[')
@@ -221,6 +428,7 @@ struct Reader<'a> {
     sid_assignments: BTreeMap<String, Vec<BlockId>>,
     sid_occurrences: BTreeMap<String, usize>,
     physical: usize,
+    orientation_approximated: usize,
 }
 
 impl Reader<'_> {
@@ -284,12 +492,21 @@ impl Reader<'_> {
         } else {
             Rect::new(0.0, 0.0, 30.0, 30.0)
         };
-        let orientation = match ps.get("Orientation").map(String::as_str) {
-            Some("left") => Orientation::Left,
-            Some("up") => Orientation::Up,
-            Some("down") => Orientation::Down,
-            _ => Orientation::Right,
-        };
+        let rotation = ps.get("BlockRotation").map(String::as_str);
+        if let Some(value) = rotation.filter(|value| !matches!(*value, "0" | "90" | "180" | "270"))
+        {
+            self.report.warnings.push(format!(
+                "{full}: invalid BlockRotation '{value}'; using right"
+            ));
+        }
+        let (orientation, approximated) = orientation_from_slx(
+            rotation,
+            ps.get("BlockMirror").map(String::as_str),
+            ps.get("Orientation").map(String::as_str),
+        );
+        if approximated {
+            self.orientation_approximated += 1;
+        }
         let mut params = BTreeMap::new();
         let mut system = None;
         let source = ps.get("SourceBlock").cloned().unwrap_or_default();
@@ -650,6 +867,7 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         sid_assignments: assigned.occurrences,
         sid_occurrences: BTreeMap::new(),
         physical: 0,
+        orientation_approximated: 0,
     };
     if assigned.renumbered > 0 {
         r.report.info.push(format!(
@@ -691,6 +909,12 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
     };
     let mut model = Model::new(model_name);
     model.root = root;
+    if r.orientation_approximated > 0 {
+        r.report.info.push(format!(
+            "{} blocks rotated by 180 degrees were mapped to a flip; port order may differ",
+            r.orientation_approximated
+        ));
+    }
     let settings = solver_settings(&pkg);
     if pkg
         .part("simulink/configSet0.json")
@@ -897,13 +1121,12 @@ fn system_el(
             pc.self_closing = true;
             e.push(pc);
         }
-        if b.orientation != Orientation::Right {
-            let o = match b.orientation {
-                Orientation::Left => "left",
-                Orientation::Up => "up",
-                _ => "down",
-            };
-            e.push(p_el("Orientation", o));
+        let (rotation, mirror) = orientation_to_slx(b.orientation);
+        if let Some(rotation) = rotation {
+            e.push(p_el("BlockRotation", rotation));
+        }
+        if mirror {
+            e.push(p_el("BlockMirror", "on"));
         }
         if extra {
             e.push(p_el(
@@ -975,7 +1198,9 @@ pub fn write_slx_bytes(
     preserved: Option<&PreservedData>,
 ) -> Result<Vec<u8>, SlxError> {
     if let Some(preserved) = preserved {
-        return write_package(&crate::patch::patch_package(model, preserved)?);
+        let mut package = crate::patch::patch_package(model, preserved)?;
+        patch_orientations(&mut package, model, preserved)?;
+        return write_package(&package);
     }
     let split = preserved.map(|p| p.split_systems).unwrap_or(false);
     let mut extra = vec![];
