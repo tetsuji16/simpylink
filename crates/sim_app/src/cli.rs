@@ -1,6 +1,8 @@
 //! Command line interface (DES-01 §5).
-use crate::report::print_diagnostics;
+#[path = "report.rs"]
+mod report;
 use clap::{Parser, Subcommand};
+use report::print_diagnostics;
 use sim_codegen_py::{generate, CodegenOptions};
 use sim_core::model::Model;
 use sim_runner::{

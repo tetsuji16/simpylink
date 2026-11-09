@@ -55,6 +55,100 @@ fn step_gain_scope_ir() {
 }
 
 #[test]
+fn step_gain_scope_ir_exact() {
+    let compiled = compile(&fx("step_gain_scope")).unwrap();
+    assert!(compiled.diagnostics.is_empty());
+    assert_eq!(
+        compiled.ir,
+        SimIr {
+            model_name: "step_gain_scope".into(),
+            config: IrConfig {
+                start_time: 0.0,
+                stop_time: 2.0,
+                output_step: 0.5,
+                solver_method: "RK45".into(),
+                rel_tol: 1e-3,
+                abs_tol: 1e-6,
+                max_step: None,
+            },
+            blocks: vec![
+                IrBlock {
+                    sid: BlockId(1),
+                    name: "Step".into(),
+                    block_type: "Step".into(),
+                    var_base: "step_1".into(),
+                    kind: IrBlockKind::Step {
+                        time: 1.0,
+                        before: 0.0,
+                        after: 2.0,
+                    },
+                    inputs: vec![],
+                    outputs: vec![SignalId(0)],
+                    sample_time: SampleTime::Continuous,
+                    cont_state: None,
+                    disc_state: None,
+                    rate_index: None,
+                },
+                IrBlock {
+                    sid: BlockId(2),
+                    name: "Gain".into(),
+                    block_type: "Gain".into(),
+                    var_base: "gain_2".into(),
+                    kind: IrBlockKind::Gain { gain: 3.0 },
+                    inputs: vec![Some(SignalId(0))],
+                    outputs: vec![SignalId(1)],
+                    sample_time: SampleTime::Continuous,
+                    cont_state: None,
+                    disc_state: None,
+                    rate_index: None,
+                },
+                IrBlock {
+                    sid: BlockId(3),
+                    name: "Scope".into(),
+                    block_type: "Scope".into(),
+                    var_base: "scope_3".into(),
+                    kind: IrBlockKind::Scope,
+                    inputs: vec![Some(SignalId(1))],
+                    outputs: vec![],
+                    sample_time: SampleTime::Continuous,
+                    cont_state: None,
+                    disc_state: None,
+                    rate_index: None,
+                },
+            ],
+            signals: vec![
+                IrSignal {
+                    id: SignalId(0),
+                    source: PortRef {
+                        block: BlockId(1),
+                        port: 1,
+                    },
+                    var_name: "step_1".into(),
+                },
+                IrSignal {
+                    id: SignalId(1),
+                    source: PortRef {
+                        block: BlockId(2),
+                        port: 1,
+                    },
+                    var_name: "gain_2".into(),
+                },
+            ],
+            num_cont_states: 0,
+            num_disc_states: 0,
+            discrete_rates: vec![],
+            breakpoints: vec![1.0],
+            logs: vec![IrLog {
+                name: "Scope/1".into(),
+                block_sid: BlockId(3),
+                port: 1,
+                signal: Some(SignalId(1)),
+            }],
+        }
+    );
+}
+
+#[test]
 fn ordering_states_and_errors() {
     let ir = compile(&fx("first_order_lag")).unwrap().ir;
     assert_eq!(
