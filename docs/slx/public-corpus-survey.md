@@ -88,7 +88,7 @@ The report's exact embedded-version counts:
 | R2019a | 2 | R2018b | 4 |
 | R2018a | 5 | R2016b | 1 |
 | R2014a | 3 | R2013b | 1 |
-| R2013a | 2 | | |
+| R2013a | 2 | No embedded version (`?`) | 2 |
 
 Top 30 unsupported types by number of readable files containing the type:
 
