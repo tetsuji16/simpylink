@@ -275,6 +275,26 @@ fn changed_parameter_patches_only_its_original_value() {
 }
 
 #[test]
+fn missing_changed_parameter_is_inserted_after_position() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="ZOrder">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let mut imp = read_slx_bytes(&z, "m").unwrap();
+    imp.model.root.blocks[0]
+        .params
+        .insert("Gain".into(), "5".into());
+    let out = read_package(&write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap()).unwrap();
+    let patched =
+        String::from_utf8_lossy(&out.part("simulink/systems/system_root.xml").unwrap().data);
+    let position = patched.find("Name=\"Position\"").unwrap();
+    let gain = patched.find("Name=\"Gain\"").unwrap();
+    let z_order = patched.find("Name=\"ZOrder\"").unwrap();
+    assert!(position < gain && gain < z_order);
+}
+
+#[test]
 fn preserved_export_adds_and_deletes_only_requested_blocks() {
     let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="Gain">3</P></Block><Block BlockType="Terminator" Name="T" SID="2"><PortCounts in="1"/></Block><Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line></System>"#;
     let z = make_zip(&[

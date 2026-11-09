@@ -21,7 +21,9 @@ fn set_p(block: &mut XmlElement, key: &str, value: &str) {
     let at = block
         .children
         .iter()
-        .position(|n| matches!(n, XmlNode::Element(e) if e.name == "Position"))
+        .position(|n| {
+            matches!(n, XmlNode::Element(e) if e.name == "P" && e.attr("Name").as_deref() == Some("Position"))
+        })
         .map(|i| i + 1)
         .unwrap_or(block.children.len());
     block.children.insert(at, XmlNode::Element(p));
