@@ -3,7 +3,18 @@
 > 対象 Issue：#81, #86, #87, #88, #91, #92, #94, #95, #99, #100（親 Issue）。実装は各 Sub-issue で行う。
 > 本書の期待値は設計上の定義または解析解であり、**Simulink R2026b 実機での一致は未検証**（ユーザーは Simulink を持たない。#101 は保留）。
 > 実ファイルの観察は公開 SLX コーパス（#82 のコメント、#143）に基づく。
-> 骨格（データ型・公開 API の追加）は PR「design: M6 skeleton」で main に入っている。§ごとに「骨格で入ったもの」を明記する。
+> 骨格（データ型・公開 API の追加）は PR #152 で入る。§ごとに「骨格で入ったもの」を明記する。
+
+| § | Sub-issue（着手順） |
+|---|---|
+| §1 変数（#94） | #154 → #155 → #156, #157, #158 |
+| §2 固定ステップ（#99） | #159 → #160 |
+| §3 ベクトル（#92） | #161 → #162 → #163, #164 |
+| §4 ゼロクロッシング（#81） | #165（#159 の後） |
+| §5 ブロック（#95） | #150, #151, #166〜#174 |
+| §6 Subsystem（#91） | #175 |
+| §7 SLX（#86, #87, #88） | #176, #177, #178、追補 #179（コメントアウト） |
+| §8 配布（#100） | #180 |
 
 ## 0. 優先順位（公開 SLX 226 件での影響から決定）
 
@@ -181,15 +192,15 @@ pub fn propagate_widths(model: &Model, conn: &Connectivity, lowered: &BTreeMap<B
 |---|---|
 | #150 | Terminator, Ground |
 | #151 | Goto, From |
-| B-ZOH | ZeroOrderHold |
-| B-TRIG | Trigonometry, Signum |
-| B-MATH | Math, Sqrt |
-| B-MINMAX | MinMax, DeadZone |
-| B-LOGIC | RelationalOperator, Logic |
-| B-PULSE | DiscretePulseGenerator（Pulse Generator 時間ベース）, Ramp |
-| B-SINKS | Display, ToWorkspace, DataTypeConversion |
-| B-LOOKUP | Lookup_n-D（1-D のみ） |
-| B-DISCRETE | Memory, Delay, DiscreteTransferFcn |
+| #166 | ZeroOrderHold |
+| #167 | Trigonometry, Signum |
+| #168 | Math, Sqrt |
+| #169 | MinMax, DeadZone |
+| #170 | RelationalOperator, Logic |
+| #171 | DiscretePulseGenerator（Pulse Generator 時間ベース）, Ramp |
+| #172 | Display, ToWorkspace, DataTypeConversion |
+| #173 | Lookup_n-D（1-D のみ） |
+| #174 | Delay, DiscreteTransferFcn（Memory は時間進行の方式と合わないため保留） |
 
 離散ブロックの「サンプルヒット時に入力をそのまま出す」挙動（ZeroOrderHold 等）は、`compute_outputs` がヒット情報を持たないため、**モデル固有部に** ヘルパー `_sample_hit(t, period, offset)`（許容 `_time_tolerance()`）を、使うブロックがあるときだけ出力して判定する（ランタイムは変えない）。
 
