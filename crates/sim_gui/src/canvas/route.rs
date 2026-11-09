@@ -15,18 +15,22 @@ pub const NAME_CLEARANCE: f64 = 18.0;
 /// the blocks in that span that sit in the same row (so the line does not
 /// cross block names, issue #44).
 ///
-/// The blocks touching `x0`/`x1` are the route's own source and destination.
-/// Their clearance is already covered by `base + FEEDBACK_GAP`, so only blocks
-/// strictly between the endpoints can push the line further down.
-pub fn feedback_level(sys: &System, x0: f64, x1: f64, base: f64) -> f64 {
+/// The route's source and destination are already covered by
+/// `base + FEEDBACK_GAP`, so other blocks in the span can push the line down.
+fn feedback_level(
+    sys: &System,
+    x0: f64,
+    x1: f64,
+    base: f64,
+    source: Option<sim_core::ids::BlockId>,
+    destination: Option<sim_core::ids::BlockId>,
+) -> f64 {
     let (lo, hi) = (x0.min(x1) - STUB, x0.max(x1) + STUB);
     let mut y = base + FEEDBACK_GAP;
-    let at_endpoint = |r: sim_core::geom::Rect| {
-        (r.left..=r.right).contains(&x0) || (r.left..=r.right).contains(&x1)
-    };
     for b in &sys.blocks {
         let r = b.position;
-        if r.right >= lo && r.left <= hi && r.top <= base + FEEDBACK_GAP && !at_endpoint(r) {
+        let is_endpoint = Some(b.sid) == source || Some(b.sid) == destination;
+        if r.right >= lo && r.left <= hi && r.top <= base + FEEDBACK_GAP && !is_endpoint {
             y = y.max(r.bottom + NAME_CLEARANCE + 6.0);
         }
     }
@@ -111,15 +115,27 @@ fn input_info(sys: &System, p: PortRef) -> Option<(Point, (f64, f64), f64)> {
     Some((pos, out_dir(b.orientation), b.position.bottom))
 }
 
+#[derive(Clone, Copy)]
+struct RouteStart {
+    block: Option<sim_core::ids::BlockId>,
+    point: Point,
+    direction: (f64, f64),
+    bottom: f64,
+}
+
 fn node(
     sys: &System,
-    start: Point,
-    sdir: (f64, f64),
-    sbottom: f64,
+    start: RouteStart,
     points: &[Point],
     dst: Option<PortRef>,
     branches: &[Branch],
 ) -> PathNode {
+    let RouteStart {
+        block: source,
+        point: start,
+        direction: sdir,
+        bottom: sbottom,
+    } = start;
     let target = dst.and_then(|d| input_info(sys, d));
     let pts = match (points.is_empty(), target) {
         (false, Some((p, _, _))) => {
@@ -134,7 +150,10 @@ fn node(
             v
         }
         (true, Some((p, din, bot))) => {
-            let below = feedback_level(sys, start.x, p.x, sbottom.max(bot));
+            let destination = dst
+                .filter(|p| sys.block(p.block).is_some())
+                .map(|p| p.block);
+            let below = feedback_level(sys, start.x, p.x, sbottom.max(bot), source, destination);
             auto_route_dirs(start, sdir, p, din, below)
         }
         (true, None) => vec![
@@ -149,7 +168,18 @@ fn node(
         .iter()
         .map(|br| {
             let s = tap_position(&pts, br.tap);
-            node(sys, s, (1.0, 0.0), s.y, &br.points, br.dst, &br.branches)
+            node(
+                sys,
+                RouteStart {
+                    block: None,
+                    point: s,
+                    direction: (1.0, 0.0),
+                    bottom: s.y,
+                },
+                &br.points,
+                br.dst,
+                &br.branches,
+            )
         })
         .collect();
     PathNode {
@@ -174,9 +204,12 @@ pub fn line_path(sys: &System, line: &Line) -> Option<LinePath> {
         line: line.id,
         root: node(
             sys,
-            start,
-            dir,
-            b.position.bottom,
+            RouteStart {
+                block: Some(line.src.block),
+                point: start,
+                direction: dir,
+                bottom: b.position.bottom,
+            },
             &line.points,
             line.dst,
             &line.branches,
@@ -250,11 +283,11 @@ mod tests {
         // Far below the row: must not push the line down.
         sys.blocks
             .push(blk(3, Rect::new(100.0, 400.0, 150.0, 440.0)));
-        let y = feedback_level(&sys, 240.0, 90.0, 70.0);
+        let y = feedback_level(&sys, 240.0, 90.0, 70.0, None, None);
         assert_eq!(y, 80.0 + NAME_CLEARANCE + 6.0);
         // Nothing in the span: plain gap below the base.
         assert_eq!(
-            feedback_level(&sys, 600.0, 500.0, 70.0),
+            feedback_level(&sys, 600.0, 500.0, 70.0, None, None),
             70.0 + FEEDBACK_GAP
         );
         // The endpoint blocks are already covered by `base + FEEDBACK_GAP`;
@@ -262,7 +295,18 @@ mod tests {
         let mut sys = System::default();
         sys.blocks.push(blk(1, Rect::new(80.0, 5.0, 100.0, 25.0)));
         sys.blocks.push(blk(2, Rect::new(140.0, 0.0, 170.0, 30.0)));
-        assert_eq!(feedback_level(&sys, 170.0, 80.0, 30.0), 50.0);
+        assert_eq!(
+            feedback_level(&sys, 170.0, 80.0, 30.0, Some(BlockId(2)), Some(BlockId(1))),
+            50.0
+        );
+
+        // An unrelated block sharing an endpoint's x coordinate still needs
+        // label clearance; endpoint identity must come from block IDs.
+        sys.blocks.push(blk(3, Rect::new(70.0, 10.0, 90.0, 35.0)));
+        assert_eq!(
+            feedback_level(&sys, 170.0, 80.0, 30.0, Some(BlockId(2)), Some(BlockId(1))),
+            59.0
+        );
     }
 
     #[test]
