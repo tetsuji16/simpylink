@@ -196,3 +196,191 @@ fn split_system_layout_and_unsupported() {
     std::fs::write(&p, b"x").unwrap();
     assert!(write_slx(&imp.model, None, &p).is_err());
 }
+
+#[test]
+fn composite_sids_do_not_collide_and_are_restored() {
+    let root = br#"<System><Block BlockType="Constant" Name="C" SID="25"><P Name="Value">2</P></Block><Block BlockType="SubSystem" Name="S" SID="36"><System Ref="system_36"/></Block><Line><P Name="Src">25#out:1</P><P Name="Dst">36#in:1</P></Line></System>"#;
+    let child = br#"<System><Block BlockType="Inport" Name="In1" SID="36::1"/><Block BlockType="Gain" Name="G" SID="36::25"><P Name="Gain">3</P></Block><Block BlockType="Outport" Name="Out1" SID="36::2"/><Line><P Name="Src">36::1#out:1</P><P Name="Dst">36::25#in:1</P></Line></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/systems/system_36.xml", child),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.blocks[0].sid.0, 25);
+    assert_eq!(imp.model.root.blocks[1].sid.0, 36);
+    let child = imp.model.root.blocks[1].system.as_ref().unwrap();
+    assert_eq!(
+        child.blocks.iter().map(|b| b.sid.0).collect::<Vec<_>>(),
+        vec![37, 38, 39]
+    );
+    assert_eq!(child.lines[0].src.block.0, 37);
+    assert_eq!(child.lines[0].dst.unwrap().block.0, 38);
+    assert_eq!(imp.preserved.sid_map[&sim_core::ids::BlockId(38)], "36::25");
+    let output = write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap();
+    assert_eq!(read_slx_bytes(&output, "m").unwrap().model, imp.model);
+    let outpkg = read_package(&output).unwrap();
+    let xml = String::from_utf8_lossy(&outpkg.part("simulink/systems/system_36.xml").unwrap().data);
+    assert!(xml.contains("SID=\"36::25\""));
+    assert!(xml.contains("36::1#out:1"));
+}
+
+#[test]
+fn unchanged_import_export_keeps_every_original_part() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="Gain">3</P><P Name="ZOrder">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        (
+            "simulink/systems/_rels/system_root.xml.rels",
+            b"<Relationships/>",
+        ),
+        ("simulink/stateflow/machine.xml", b"<Machine/>"),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    let expected = write_package(&imp.preserved.package).unwrap();
+    assert_eq!(
+        write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap(),
+        expected
+    );
+}
+
+#[test]
+fn changed_parameter_patches_only_its_original_value() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="ZOrder">2</P><P Name="Gain">3</P><P Name="GraphicalSettings">keep</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/stateflow/machine.xml", b"<Machine/>"),
+    ]);
+    let mut imp = read_slx_bytes(&z, "m").unwrap();
+    imp.model.root.blocks[0]
+        .params
+        .insert("Gain".into(), "5".into());
+    let out = read_package(&write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap()).unwrap();
+    let patched =
+        String::from_utf8_lossy(&out.part("simulink/systems/system_root.xml").unwrap().data);
+    assert!(patched.contains("<P Name=\"Gain\">5</P>"));
+    assert!(patched.contains("<P Name=\"GraphicalSettings\">keep</P>"));
+    assert_eq!(
+        out.part("simulink/stateflow/machine.xml").unwrap().data,
+        b"<Machine/>"
+    );
+    assert_eq!(
+        read_slx_bytes(&write_package(&out).unwrap(), "m")
+            .unwrap()
+            .model,
+        imp.model
+    );
+}
+
+#[test]
+fn r2026b_json_solver_settings_and_infinity_fallback() {
+    let root = br#"<System><Block BlockType="Constant" Name="C" SID="1"/></System>"#;
+    let info = br#"{"ConfigSetInfo":[{"Active":true,"PartName":"/simulink/configSet0.json"}]}"#;
+    let cfg = br#"{"_object_class":"Simulink.ConfigSet","_properties":{"Components":{"_elements":[{"_object_class":"Simulink.SolverCC","_properties":{"StopTime":"5","SolverName":"ode23","MaxStep":"1e-3"}}]}}}"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/configSetInfo.json", info),
+        ("simulink/configSet0.json", cfg),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.config.stop_time, 5.0);
+    assert_eq!(imp.model.config.solver, sim_core::model::SolverKind::Ode23);
+    assert_eq!(imp.model.config.max_step, Some(1e-3));
+    assert!(imp.report.warnings.is_empty());
+
+    let inf = br#"{"_properties":{"Components":{"_elements":[{"_object_class":"Simulink.SolverCC","_properties":{"StopTime":"inf"}}]}}}"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/configSet0.json", inf),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.config.stop_time, 10.0);
+    assert!(imp
+        .report
+        .warnings
+        .iter()
+        .any(|w| w.contains("StopTime inf")));
+    assert!(!sim_core::validate::validate_model(&imp.model)
+        .iter()
+        .any(|d| d.code == "E_INVALID_CONFIG"));
+}
+
+#[test]
+fn block_library_root_is_reported_as_unsupported() {
+    let bd = br#"<ModelInformation><Library><System/></Library></ModelInformation>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/blockdiagram.xml", bd),
+    ]);
+    assert!(
+        matches!(read_slx_bytes(&z, "lib"), Err(SlxError::Unsupported(message)) if message.contains("block library"))
+    );
+}
+
+#[test]
+fn reference_pid_controller_uses_instance_data() {
+    let root = br#"<System><Block BlockType="Reference" Name="PID" SID="2"><PortCounts in="1" out="1"/><P Name="LibrarySourceBlock">simulink/Continuous/PID Controller</P><P Name="SourceBlock">slpidlib/PID Controller</P><InstanceData><P Name="P">2</P><P Name="I">3</P><P Name="D">0</P><P Name="N">100</P><P Name="Controller">PID</P><P Name="Form">Parallel</P></InstanceData></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    let pid = &imp.model.root.blocks[0];
+    assert_eq!(pid.block_type, "PIDController");
+    assert_eq!(pid.params["P"], "2");
+    assert_eq!(pid.params["I"], "3");
+    assert!(imp.report.unsupported_blocks.is_empty());
+    let rerun = read_slx_bytes(&write_slx_bytes(&imp.model, None).unwrap(), "m").unwrap();
+    assert_eq!(rerun.model.root.blocks[0].block_type, "PIDController");
+}
+
+#[test]
+fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
+    let root = br#"<System>
+<Block BlockType="Constant" Name="C" SID="1"/><Block BlockType="Terminator" Name="T" SID="2"><PortCounts in="1"/></Block>
+<Block BlockType="Constant" Name="C1" SID="3"/><Block BlockType="Demux" Name="D" SID="4"><PortCounts in="1" out="2"/></Block><Block BlockType="Scope" Name="S" SID="5"><P Name="NumInputPorts">2</P></Block>
+<Block BlockType="SimscapeBlock" Name="P1" SID="6"/><Block BlockType="SimscapeBlock" Name="P2" SID="7"/>
+<Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line><Line><P Name="Src">3#out:1</P><P Name="Dst">4#in:1</P></Line>
+<Line><P Name="Src">4#out:1</P><P Name="Dst">5#in:1</P></Line><Line><P Name="Src">4#out:2</P><P Name="Dst">5#in:2</P></Line>
+<Line><P Name="Src">6#lconn:1</P><P Name="Dst">7#rconn:1</P></Line><Line><P Name="Src">6#lconn:1</P><P Name="Dst">7#rconn:1</P></Line><Line><P Name="Src">6#lconn:1</P><P Name="Dst">7#rconn:1</P></Line>
+</System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.lines.len(), 4);
+    assert!(!sim_core::validate::validate_model(&imp.model)
+        .iter()
+        .any(|d| d.code == "E_PORT_OUT_OF_RANGE"));
+    assert!(imp
+        .report
+        .dropped
+        .iter()
+        .any(|d| d.contains("3 physical (Simscape) connections")));
+    let out = write_slx_bytes(&imp.model, None).unwrap();
+    let package = read_package(&out).unwrap();
+    let xml = String::from_utf8_lossy(
+        package
+            .part("simulink/blockdiagram.xml")
+            .map(|p| p.data.as_slice())
+            .unwrap_or_default(),
+    );
+    assert!(!xml.contains("__opaque"));
+    assert!(xml.contains("<PortCounts in=\"1\" out=\"2\"/>"));
+
+    let invalid = br#"<System><Block BlockType="Unlisted" Name="X" SID="1"><PortCounts in="abc"/></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", invalid),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert!(!imp.model.root.blocks[0]
+        .params
+        .contains_key("__opaque_inputs"));
+    assert_eq!(imp.report.warnings.len(), 1);
+}

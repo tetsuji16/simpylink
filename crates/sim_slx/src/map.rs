@@ -4,9 +4,9 @@ use crate::opc::{read_package, write_package, OpcPackage};
 use crate::xml::{parse_xml, write_xml, XmlDocument, XmlElement, XmlNode};
 use sim_core::geom::Rect;
 use sim_core::ids::{BlockId, LineId};
-use sim_core::library::{fill_default_params, spec};
+use sim_core::library::{fill_default_params, spec, OPAQUE_INPUTS, OPAQUE_OUTPUTS};
 use sim_core::model::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// What happened during import.
@@ -26,6 +26,8 @@ impl ImportReport {
                 .to_string(),
         ];
         v.extend(self.info.iter().map(|s| format!("[Info] {s}")));
+        let types: BTreeSet<_> = self.unsupported_blocks.iter().map(|(_, t)| t).collect();
+        v.push(format!("[Summary] {} blocks not supported ({} types); they are kept as opaque blocks and cannot be simulated.", self.unsupported_blocks.len(), types.len()));
         v.extend(self.warnings.iter().map(|s| format!("[Warning] {s}")));
         v.extend(
             self.unsupported_blocks
@@ -38,10 +40,25 @@ impl ImportReport {
 }
 
 /// Original package, kept for export.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PreservedData {
     pub package: OpcPackage,
     pub split_systems: bool,
+    /// simpylink BlockId to original SLX SID string.
+    pub sid_map: BTreeMap<BlockId, String>,
+    /// Model exactly as imported; used to find edits before writing.
+    pub baseline: Model,
+}
+
+impl Default for PreservedData {
+    fn default() -> Self {
+        Self {
+            package: OpcPackage::default(),
+            split_systems: false,
+            sid_map: BTreeMap::new(),
+            baseline: Model::new(""),
+        }
+    }
 }
 
 /// Import result.
@@ -54,6 +71,118 @@ pub struct SlxImport {
 
 const BD: &str = "simulink/blockdiagram.xml";
 const ROOT_SYS: &str = "simulink/systems/system_root.xml";
+
+fn collect_sids(pkg: &OpcPackage, split: bool) -> Vec<String> {
+    fn walk(
+        pkg: &OpcPackage,
+        sys: &XmlElement,
+        seen: &mut BTreeSet<String>,
+        out: &mut Vec<String>,
+    ) {
+        for block in sys.children_named("Block") {
+            if let Some(sid) = block.attr("SID") {
+                out.push(sid);
+            }
+            if let Some(child) = block.children_named("System").next() {
+                if let Some(reference) = child.attr("Ref") {
+                    let part = format!("simulink/systems/{reference}.xml");
+                    if seen.insert(part.clone()) {
+                        if let Some(doc) =
+                            pkg.part(&part).and_then(|p| parse_xml(&part, &p.data).ok())
+                        {
+                            if let Some(root) = doc.root() {
+                                walk(pkg, root, seen, out);
+                            }
+                        }
+                    }
+                } else {
+                    walk(pkg, child, seen, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    let root = if split {
+        pkg.part(ROOT_SYS)
+            .and_then(|p| parse_xml(ROOT_SYS, &p.data).ok())
+    } else {
+        pkg.part(BD).and_then(|p| parse_xml(BD, &p.data).ok())
+    };
+    if let Some(doc) = root {
+        if split {
+            if let Some(sys) = doc.root() {
+                walk(pkg, sys, &mut seen, &mut out);
+            }
+        } else if let Some(sys) = doc
+            .root()
+            .and_then(|r| {
+                r.children_named("Model")
+                    .next()
+                    .or(if r.name == "Model" { Some(r) } else { None })
+            })
+            .and_then(|m| m.children_named("System").next())
+        {
+            walk(pkg, sys, &mut seen, &mut out);
+        }
+    }
+    out
+}
+
+struct SidAssignment {
+    lookup: BTreeMap<String, BlockId>,
+    reverse: BTreeMap<BlockId, String>,
+    occurrences: BTreeMap<String, Vec<BlockId>>,
+    renumbered: usize,
+}
+
+fn assign_sids(raw: &[String]) -> SidAssignment {
+    let mut used = BTreeSet::new();
+    let mut by_text = BTreeMap::new();
+    let mut reverse = BTreeMap::new();
+    let mut assignments: BTreeMap<String, Vec<BlockId>> = BTreeMap::new();
+    let mut counts = BTreeMap::<String, usize>::new();
+    for sid in raw {
+        *counts.entry(sid.clone()).or_default() += 1;
+    }
+    let mut max = 0u32;
+    for sid in raw {
+        if counts.get(sid) == Some(&1) {
+            if let Ok(n) = sid.parse::<u32>() {
+                used.insert(n);
+                max = max.max(n);
+            }
+        }
+    }
+    let mut next = max.saturating_add(1);
+    let mut renumbered = 0;
+    let mut seen = BTreeMap::<String, usize>::new();
+    for sid in raw {
+        let occurrence = seen.entry(sid.clone()).or_default();
+        let id = if *occurrence == 0 && counts.get(sid) == Some(&1) {
+            sid.parse::<u32>().ok().map(BlockId).unwrap_or(BlockId(0))
+        } else {
+            while used.contains(&next) {
+                next = next.saturating_add(1);
+            }
+            let id = BlockId(next);
+            used.insert(next);
+            next = next.saturating_add(1);
+            renumbered += 1;
+            id
+        };
+        *occurrence += 1;
+        assignments.entry(sid.clone()).or_default().push(id);
+        by_text.entry(sid.clone()).or_insert(id);
+        reverse.insert(id, sid.clone());
+    }
+    SidAssignment {
+        lookup: by_text,
+        reverse,
+        occurrences: assignments,
+        renumbered,
+    }
+}
 
 fn p_map(e: &XmlElement) -> BTreeMap<String, String> {
     e.children_named("P")
@@ -71,15 +200,15 @@ fn parse_num_list(s: &str) -> Vec<f64> {
         .collect()
 }
 
-fn parse_port_ref(s: &str, want_in: bool) -> Option<PortRef> {
+fn parse_port_ref(s: &str, want_in: bool, sid_map: &BTreeMap<String, BlockId>) -> Option<PortRef> {
     let (sid, rest) = s.trim().split_once('#')?;
     let (kind, n) = rest.split_once(':')?;
     if (want_in && kind != "in") || (!want_in && kind != "out") {
         return None;
     }
-    let sid: u32 = sid.rsplit(':').next()?.parse().ok()?;
+    let sid = *sid_map.get(sid)?;
     Some(PortRef {
-        block: BlockId(sid),
+        block: sid,
         port: n.parse().ok()?,
     })
 }
@@ -88,6 +217,10 @@ struct Reader<'a> {
     pkg: &'a OpcPackage,
     report: ImportReport,
     max_line: u32,
+    sid_map: BTreeMap<String, BlockId>,
+    sid_assignments: BTreeMap<String, Vec<BlockId>>,
+    sid_occurrences: BTreeMap<String, usize>,
+    physical: usize,
 }
 
 impl Reader<'_> {
@@ -97,6 +230,7 @@ impl Reader<'_> {
 
     fn system(&mut self, sys_el: &XmlElement, path: &str) -> System {
         let mut sys = System::default();
+        let physical_before = self.physical;
         for b in sys_el.children_named("Block") {
             if let Some(blk) = self.block(b, path) {
                 sys.insert_block_sorted(blk);
@@ -107,6 +241,12 @@ impl Reader<'_> {
                 sys.insert_line_sorted(line);
             }
         }
+        let physical = self.physical - physical_before;
+        if physical > 0 {
+            self.report.dropped.push(format!(
+                "{path}: {physical} physical (Simscape) connections are not supported"
+            ));
+        }
         sys
     }
 
@@ -115,13 +255,23 @@ impl Reader<'_> {
         let mut bt = b.attr("BlockType").unwrap_or_default();
         let name = b.attr("Name").unwrap_or_default();
         let full = format!("{path}/{name}");
-        let Some(sid) = b
-            .attr("SID")
-            .and_then(|s| s.rsplit(':').next().and_then(|x| x.parse::<u32>().ok()))
-        else {
+        let Some(sid_text) = b.attr("SID") else {
             self.report
                 .dropped
                 .push(format!("{full}: block without numeric SID"));
+            return None;
+        };
+        let occurrence = self.sid_occurrences.entry(sid_text.clone()).or_default();
+        let assigned = self
+            .sid_assignments
+            .get(&sid_text)
+            .and_then(|ids| ids.get(*occurrence))
+            .copied();
+        *occurrence += 1;
+        let Some(sid) = assigned.or_else(|| self.sid_map.get(&sid_text).copied()) else {
+            self.report
+                .dropped
+                .push(format!("{full}: SID '{sid_text}' was not assigned"));
             return None;
         };
         let pos = parse_num_list(
@@ -143,15 +293,38 @@ impl Reader<'_> {
         let mut params = BTreeMap::new();
         let mut system = None;
         let source = ps.get("SourceBlock").cloned().unwrap_or_default();
-        if bt == "SubSystem" && source.contains("PID Controller") {
+        if (bt == "SubSystem" && source.contains("PID Controller"))
+            || (bt == "Reference" && source.contains("PID Controller"))
+        {
             bt = "PIDController".into();
             let inst: BTreeMap<String, String> =
                 b.children_named("InstanceData").flat_map(p_map).collect();
-            let all: BTreeMap<String, String> = ps.clone().into_iter().chain(inst).collect();
+            let all: BTreeMap<String, String> =
+                ps.clone().into_iter().chain(inst.clone()).collect();
             for k in ["P", "I", "D", "N", "Controller", "Form", "TimeDomain"] {
                 if let Some(v) = all.get(k) {
                     params.insert(k.to_string(), v.clone());
                 }
+            }
+            if !params.contains_key("TimeDomain")
+                && ps
+                    .get("LibrarySourceBlock")
+                    .is_some_and(|s| s.starts_with("simulink/Discrete/"))
+            {
+                params.insert("TimeDomain".into(), "Discrete-time".into());
+            }
+            if inst.get("UseFilter").is_some_and(|s| s == "off") {
+                self.report.warnings.push(format!(
+                    "{full}: PID without derivative filter is approximated with N"
+                ));
+            }
+            if ["InitialConditionForIntegrator", "InitialConditionForFilter"]
+                .iter()
+                .any(|k| inst.get(*k).is_some_and(|v| v != "0"))
+            {
+                self.report
+                    .warnings
+                    .push(format!("{full}: PID initial conditions are ignored"));
             }
             self.report.info.push(format!(
                 "{full}: PID Controller library block mapped to PIDController"
@@ -183,12 +356,41 @@ impl Reader<'_> {
                 }
             }
         } else {
-            self.report
-                .unsupported_blocks
-                .push((full.clone(), bt.clone()));
+            if let Some(pc) = b.children_named("PortCounts").next() {
+                let input = pc.attr("in");
+                let output = pc.attr("out");
+                let parsed_in = input.as_deref().map(str::parse::<u32>);
+                let parsed_out = output.as_deref().map(str::parse::<u32>);
+                if parsed_in.as_ref().is_some_and(Result::is_err)
+                    || parsed_out.as_ref().is_some_and(Result::is_err)
+                {
+                    self.report
+                        .warnings
+                        .push(format!("{full}: cannot parse PortCounts; using zero ports"));
+                } else {
+                    if let Some(Ok(n)) = parsed_in {
+                        if n > 0 {
+                            params.insert(OPAQUE_INPUTS.into(), n.to_string());
+                        }
+                    }
+                    if let Some(Ok(n)) = parsed_out {
+                        if n > 0 {
+                            params.insert(OPAQUE_OUTPUTS.into(), n.to_string());
+                        }
+                    }
+                }
+            }
+            self.report.unsupported_blocks.push((
+                full.clone(),
+                if bt == "Reference" {
+                    format!("Reference:{}", source.replace('\n', " "))
+                } else {
+                    bt.clone()
+                },
+            ));
         }
         let mut blk = Block {
-            sid: BlockId(sid),
+            sid,
             block_type: bt,
             name,
             position,
@@ -203,7 +405,10 @@ impl Reader<'_> {
     fn branches(&mut self, e: &XmlElement, path: &str) -> (Option<PortRef>, Vec<Branch>) {
         let ps = p_map(e);
         let dst = ps.get("Dst").and_then(|d| {
-            let r = parse_port_ref(d, true);
+            if d.contains("#lconn:") || d.contains("#rconn:") {
+                return None;
+            }
+            let r = parse_port_ref(d, true, &self.sid_map);
             if r.is_none() {
                 self.report
                     .dropped
@@ -226,7 +431,26 @@ impl Reader<'_> {
 
     fn line(&mut self, l: &XmlElement, path: &str) -> Option<Line> {
         let ps = p_map(l);
-        let Some(src) = ps.get("Src").and_then(|s| parse_port_ref(s, false)) else {
+        fn physical(e: &XmlElement) -> bool {
+            let props = p_map(e);
+            props
+                .values()
+                .any(|v| v.contains("#lconn:") || v.contains("#rconn:"))
+                || e.children_named("Branch").any(physical)
+        }
+        if physical(l) {
+            self.physical += 1;
+        }
+        if ps
+            .get("Src")
+            .is_some_and(|s| s.contains("#lconn:") || s.contains("#rconn:"))
+        {
+            return None;
+        }
+        let Some(src) = ps
+            .get("Src")
+            .and_then(|s| parse_port_ref(s, false, &self.sid_map))
+        else {
             self.report
                 .dropped
                 .push(format!("{path}: line without a supported source"));
@@ -280,15 +504,159 @@ fn config_value(pkg: &OpcPackage, name: &str) -> Option<String> {
     None
 }
 
+/// Active config-set solver properties as name to string value.
+fn solver_settings(pkg: &OpcPackage) -> BTreeMap<String, String> {
+    let json_path = pkg
+        .part("simulink/configSetInfo.json")
+        .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p.data).ok())
+        .and_then(|v| {
+            v.get("ConfigSetInfo")?
+                .as_array()?
+                .iter()
+                .find(|x| x.get("Active").and_then(|a| a.as_bool()) == Some(true))?
+                .get("PartName")?
+                .as_str()
+                .map(|s| s.trim_start_matches('/').to_string())
+        })
+        .filter(|s| pkg.part(s).is_some())
+        .or_else(|| {
+            pkg.part("simulink/configSet0.json")
+                .map(|_| "simulink/configSet0.json".to_string())
+        });
+    if let Some(path) = json_path {
+        let Some(part) = pkg.part(&path) else {
+            return BTreeMap::new();
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&part.data) else {
+            return BTreeMap::new();
+        };
+        let mut out = BTreeMap::new();
+        if let Some(items) = value
+            .pointer("/_properties/Components/_elements")
+            .and_then(|v| v.as_array())
+        {
+            for item in items {
+                if item.get("_object_class").and_then(|v| v.as_str()) != Some("Simulink.SolverCC") {
+                    continue;
+                }
+                if let Some(props) = item.pointer("/_properties").and_then(|v| v.as_object()) {
+                    for (key, value) in props {
+                        if let Some(s) = value.as_str() {
+                            out.insert(key.clone(), s.to_string());
+                        } else if value.is_number() || value.is_boolean() {
+                            out.insert(key.clone(), value.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if !out.is_empty() {
+            return out;
+        }
+    }
+    for (info, fallback) in [
+        ("simulink/configSetInfo.xml", "simulink/configSet0.xml"),
+        ("", "simulink/configSet0.xml"),
+    ] {
+        let target = if !info.is_empty() {
+            pkg.part(info)
+                .and_then(|p| parse_xml(info, &p.data).ok())
+                .and_then(|d| {
+                    d.root()
+                        .and_then(|r| {
+                            r.children_named("ConfigSet")
+                                .find(|e| e.attr("Active").as_deref() == Some("true"))
+                        })
+                        .and_then(|e| e.attr("PartName"))
+                })
+                .map(|p| p.trim_start_matches('/').to_string())
+                .unwrap_or_else(|| fallback.to_string())
+        } else {
+            fallback.to_string()
+        };
+        if let Some(part) = pkg.part(&target) {
+            if let Ok(doc) = parse_xml(&target, &part.data) {
+                if let Some(root) = doc.root() {
+                    let mut solver = None;
+                    fn find_solver(
+                        e: &XmlElement,
+                        inside: bool,
+                        out: &mut Option<BTreeMap<String, String>>,
+                    ) {
+                        let is_solver = inside
+                            || (e.name == "Object"
+                                && e.attr("ClassName").as_deref() == Some("Simulink.SolverCC"));
+                        if is_solver {
+                            let values: BTreeMap<_, _> = e
+                                .children_named("P")
+                                .filter_map(|p| Some((p.attr("Name")?, p.text())))
+                                .collect();
+                            if !values.is_empty() {
+                                *out = Some(values);
+                            }
+                        }
+                        for c in e.elements() {
+                            find_solver(c, is_solver, out);
+                        }
+                    }
+                    find_solver(root, false, &mut solver);
+                    if let Some(values) = solver {
+                        return values;
+                    }
+                }
+            }
+        }
+    }
+    BTreeMap::new()
+}
+
 /// Reads an SLX from bytes.
 pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxError> {
     let pkg = read_package(bytes)?;
+    let split = pkg.part(ROOT_SYS).is_some();
+    if let Some(part) = pkg.part("simulink/blockDiagram.json") {
+        let value: serde_json::Value = serde_json::from_slice(&part.data)
+            .map_err(|_| SlxError::Unsupported("cannot parse blockDiagram.json".into()))?;
+        if value.get("BlockDiagram").is_none() {
+            let root_key = value
+                .as_object()
+                .and_then(|o| o.keys().next())
+                .map(String::as_str)
+                .unwrap_or("?");
+            return Err(SlxError::Unsupported(format!(
+                "unsupported blockDiagram.json root '{root_key}'"
+            )));
+        }
+    }
+    if let Some(part) = pkg.part(BD) {
+        if let Ok(doc) = parse_xml(BD, &part.data) {
+            if doc
+                .root()
+                .is_some_and(|r| r.children_named("Library").next().is_some())
+            {
+                return Err(SlxError::Unsupported(
+                    "this SLX is a block library, not a model".into(),
+                ));
+            }
+        }
+    }
+    let raw_sids = collect_sids(&pkg, split);
+    let assigned = assign_sids(&raw_sids);
     let mut r = Reader {
         pkg: &pkg,
         report: ImportReport::default(),
         max_line: 0,
+        sid_map: assigned.lookup,
+        sid_assignments: assigned.occurrences,
+        sid_occurrences: BTreeMap::new(),
+        physical: 0,
     };
-    let split = pkg.part(ROOT_SYS).is_some();
+    if assigned.renumbered > 0 {
+        r.report.info.push(format!(
+            "{} block SIDs were renumbered (non-numeric or duplicate SID)",
+            assigned.renumbered
+        ));
+    }
     let root = if split {
         let doc = r
             .load_part(ROOT_SYS)
@@ -323,23 +691,84 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
     };
     let mut model = Model::new(model_name);
     model.root = root;
-    let num = |k: &str| config_value(&pkg, k).and_then(|v| v.trim().parse::<f64>().ok());
-    if let Some(v) = num("StartTime") {
+    let settings = solver_settings(&pkg);
+    if pkg
+        .part("simulink/configSet0.json")
+        .is_some_and(|p| serde_json::from_slice::<serde_json::Value>(&p.data).is_err())
+    {
+        r.report
+            .warnings
+            .push("cannot parse configSet0.json".into());
+    }
+    let value = |key: &str| {
+        settings
+            .get(key)
+            .cloned()
+            .or_else(|| config_value(&pkg, key))
+    };
+    let mut num = |k: &str, default: f64| {
+        let raw = value(k)?;
+        if raw == "auto" && ["MaxStep", "RelTol", "AbsTol"].contains(&k) {
+            return None;
+        }
+        if raw.eq_ignore_ascii_case("inf") && k == "StopTime" {
+            r.report
+                .warnings
+                .push("StopTime inf is not supported; using 10".into());
+            return Some(default);
+        }
+        match raw.trim().parse::<f64>() {
+            Ok(v) if v.is_finite() => Some(v),
+            _ => {
+                r.report
+                    .warnings
+                    .push(format!("{k} '{raw}' is not a number; using {default}"));
+                Some(default)
+            }
+        }
+    };
+    if let Some(v) = num("StartTime", model.config.start_time) {
         model.config.start_time = v;
     }
-    if let Some(v) = num("StopTime") {
+    if let Some(v) = num("StopTime", model.config.stop_time) {
         model.config.stop_time = v;
     }
-    if let Some(v) = num("RelTol") {
+    if let Some(v) = num("RelTol", model.config.rel_tol) {
         model.config.rel_tol = v;
     }
-    if let Some(v) = num("AbsTol") {
+    if let Some(v) = num("AbsTol", model.config.abs_tol) {
         model.config.abs_tol = v;
     }
-    if let Some(v) = num("MaxStep") {
-        model.config.max_step = Some(v);
+    if let Some(raw) = value("MaxStep") {
+        if raw != "auto" {
+            if let Ok(v) = raw.trim().parse::<f64>() {
+                if v.is_finite() {
+                    model.config.max_step = Some(v);
+                } else {
+                    r.report
+                        .warnings
+                        .push(format!("MaxStep '{raw}' is not a number; using default"));
+                }
+            } else {
+                r.report
+                    .warnings
+                    .push(format!("MaxStep '{raw}' is not a number; using default"));
+            }
+        }
     }
-    match config_value(&pkg, "Solver").as_deref() {
+    if let Some(v) = settings.get("FixedStep").filter(|v| *v != "auto") {
+        r.report.warnings.push(format!(
+            "fixed solver step '{v}' is not supported; using auto (RK45)"
+        ));
+    }
+    match settings
+        .get("SolverName")
+        .or_else(|| settings.get("Solver"))
+        .cloned()
+        .or_else(|| config_value(&pkg, "SolverName"))
+        .or_else(|| config_value(&pkg, "Solver"))
+        .as_deref()
+    {
         Some("ode45") => model.config.solver = SolverKind::Ode45,
         Some("ode23") => model.config.solver = SolverKind::Ode23,
         Some("ode15s") => model.config.solver = SolverKind::Ode15s,
@@ -360,6 +789,7 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         .push("line routing points are not imported (lines are auto-routed)".into());
     model.next_sid = model.max_sid() + 1;
     model.next_line_id = model.max_line_id() + 1;
+    let baseline = model.clone();
     let report = r.report;
     Ok(SlxImport {
         model,
@@ -367,6 +797,8 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         preserved: PreservedData {
             package: pkg.clone(),
             split_systems: split,
+            sid_map: assigned.reverse,
+            baseline,
         },
     })
 }
@@ -397,14 +829,28 @@ fn fmt_num(v: f64) -> String {
     }
 }
 
-fn branch_el(dst: Option<PortRef>, brs: &[Branch]) -> Vec<XmlElement> {
+fn sid_text(id: BlockId, sid_map: Option<&BTreeMap<BlockId, String>>) -> String {
+    sid_map
+        .and_then(|m| m.get(&id))
+        .cloned()
+        .unwrap_or_else(|| id.0.to_string())
+}
+
+fn branch_el(
+    dst: Option<PortRef>,
+    brs: &[Branch],
+    sid_map: Option<&BTreeMap<BlockId, String>>,
+) -> Vec<XmlElement> {
     let mut v = vec![];
     if let Some(d) = dst {
-        v.push(p_el("Dst", &format!("{}#in:{}", d.block.0, d.port)));
+        v.push(p_el(
+            "Dst",
+            &format!("{}#in:{}", sid_text(d.block, sid_map), d.port),
+        ));
     }
     for b in brs {
         let mut e = XmlElement::new("Branch");
-        for c in branch_el(b.dst, &b.branches) {
+        for c in branch_el(b.dst, &b.branches, sid_map) {
             e.push(c);
         }
         v.push(e);
@@ -412,18 +858,23 @@ fn branch_el(dst: Option<PortRef>, brs: &[Branch]) -> Vec<XmlElement> {
     v
 }
 
-fn system_el(sys: &System, split: bool, parts: &mut Vec<(String, XmlElement)>) -> XmlElement {
+fn system_el(
+    sys: &System,
+    split: bool,
+    parts: &mut Vec<(String, XmlElement)>,
+    sid_map: Option<&BTreeMap<BlockId, String>>,
+) -> XmlElement {
     let mut s = XmlElement::new("System");
     for b in &sys.blocks {
         let mut e = XmlElement::new("Block");
         let (bt, extra) = if b.block_type == "PIDController" {
-            ("SubSystem", true)
+            ("Reference", true)
         } else {
             (b.block_type.as_str(), false)
         };
         e.set_attr("BlockType", bt);
         e.set_attr("Name", &b.name);
-        e.set_attr("SID", &b.sid.0.to_string());
+        e.set_attr("SID", &sid_text(b.sid, sid_map));
         let r = b.position;
         e.push(p_el(
             "Position",
@@ -435,6 +886,17 @@ fn system_el(sys: &System, split: bool, parts: &mut Vec<(String, XmlElement)>) -
                 fmt_num(r.bottom)
             ),
         ));
+        if b.params.contains_key(OPAQUE_INPUTS) || b.params.contains_key(OPAQUE_OUTPUTS) {
+            let mut pc = XmlElement::new("PortCounts");
+            if let Some(n) = b.params.get(OPAQUE_INPUTS) {
+                pc.set_attr("in", n);
+            }
+            if let Some(n) = b.params.get(OPAQUE_OUTPUTS) {
+                pc.set_attr("out", n);
+            }
+            pc.self_closing = true;
+            e.push(pc);
+        }
         if b.orientation != Orientation::Right {
             let o = match b.orientation {
                 Orientation::Left => "left",
@@ -444,19 +906,28 @@ fn system_el(sys: &System, split: bool, parts: &mut Vec<(String, XmlElement)>) -
             e.push(p_el("Orientation", o));
         }
         if extra {
-            e.push(p_el("SourceBlock", "simulink/Continuous/PID Controller"));
+            e.push(p_el(
+                "LibrarySourceBlock",
+                "simulink/Continuous/PID Controller",
+            ));
+            e.push(p_el("SourceBlock", "slpidlib/PID Controller"));
+            e.push(p_el("SourceType", "PID 1dof"));
             let mut inst = XmlElement::new("InstanceData");
-            for (k, v) in &b.params {
-                inst.push(p_el(k, v));
+            for k in ["P", "I", "D", "N", "Controller", "Form", "TimeDomain"] {
+                if let Some(v) = b.params.get(k) {
+                    inst.push(p_el(k, v));
+                }
             }
             e.push(inst);
         } else {
             for (k, v) in &b.params {
-                e.push(p_el(k, v));
+                if !k.starts_with("__") {
+                    e.push(p_el(k, v));
+                }
             }
         }
         if let Some(c) = &b.system {
-            let child = system_el(c, split, parts);
+            let child = system_el(c, split, parts, sid_map);
             if split {
                 let r = format!("system_{}", b.sid.0);
                 parts.push((format!("simulink/systems/{r}.xml"), child));
@@ -477,9 +948,9 @@ fn system_el(sys: &System, split: bool, parts: &mut Vec<(String, XmlElement)>) -
         }
         e.push(p_el(
             "Src",
-            &format!("{}#out:{}", l.src.block.0, l.src.port),
+            &format!("{}#out:{}", sid_text(l.src.block, sid_map), l.src.port),
         ));
-        for c in branch_el(l.dst, &l.branches) {
+        for c in branch_el(l.dst, &l.branches, sid_map) {
             e.push(c);
         }
         s.push(e);
@@ -503,9 +974,17 @@ pub fn write_slx_bytes(
     model: &Model,
     preserved: Option<&PreservedData>,
 ) -> Result<Vec<u8>, SlxError> {
+    if let Some(preserved) = preserved {
+        return write_package(&crate::patch::patch_package(model, preserved)?);
+    }
     let split = preserved.map(|p| p.split_systems).unwrap_or(false);
     let mut extra = vec![];
-    let root_sys = system_el(&model.root, split, &mut extra);
+    let root_sys = system_el(
+        &model.root,
+        split,
+        &mut extra,
+        preserved.map(|p| &p.sid_map),
+    );
     let mut pkg = preserved.map(|p| p.package.clone()).unwrap_or_default();
     if pkg.part("[Content_Types].xml").is_none() {
         pkg.set_part(

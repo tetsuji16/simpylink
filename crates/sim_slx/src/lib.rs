@@ -6,6 +6,7 @@
 pub mod error;
 pub mod map;
 pub mod opc;
+mod patch;
 pub mod xml;
 
 pub use error::SlxError;

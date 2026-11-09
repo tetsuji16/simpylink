@@ -5,7 +5,7 @@ use sim_core::edit::*;
 use sim_core::geom::{Point, Rect};
 use sim_core::ids::{BlockId, LineId};
 use sim_core::json::from_json_str;
-use sim_core::library::new_block;
+use sim_core::library::{new_block, port_counts, PortCounts, OPAQUE_INPUTS, OPAQUE_OUTPUTS};
 use sim_core::model::*;
 use sim_core::path::SystemPath;
 use sim_core::validate::validate_model;
@@ -29,6 +29,32 @@ fn pr(b: u32, p: u32) -> PortRef {
         block: BlockId(b),
         port: p,
     }
+}
+
+#[test]
+fn opaque_block_port_counts_are_used_for_validation() {
+    let mut block = Block {
+        sid: BlockId(1),
+        block_type: "Terminator".into(),
+        name: "T".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [(OPAQUE_INPUTS.to_string(), "1".to_string())]
+            .into_iter()
+            .collect(),
+        system: None,
+    };
+    assert_eq!(
+        port_counts(&block).unwrap(),
+        PortCounts {
+            inputs: 1,
+            outputs: 0
+        }
+    );
+    block.params.insert(OPAQUE_OUTPUTS.into(), "x".into());
+    assert!(port_counts(&block).is_err());
+    block.params.clear();
+    assert!(port_counts(&block).is_err());
 }
 
 #[test]
