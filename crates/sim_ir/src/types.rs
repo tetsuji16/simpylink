@@ -39,6 +39,8 @@ pub struct IrConfig {
     pub rel_tol: f64,
     pub abs_tol: f64,
     pub max_step: Option<f64>,
+    /// Fixed step size (fixed-step solvers only, #99). `None` = auto or variable-step.
+    pub fixed_step: Option<f64>,
 }
 
 /// One signal.
@@ -47,6 +49,8 @@ pub struct IrSignal {
     pub id: SignalId,
     pub source: PortRef,
     pub var_name: String,
+    /// Number of elements (1 = scalar). Always 1 until vector signals land (#92).
+    pub width: usize,
 }
 
 /// One non-virtual block in execution order.

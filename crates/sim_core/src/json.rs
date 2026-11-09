@@ -1,5 +1,5 @@
 //! JSON format v1 load/save.
-use crate::model::{Model, System, MODEL_FORMAT, MODEL_FORMAT_VERSION};
+use crate::model::{Model, System, MODEL_FORMAT, MODEL_FORMAT_VERSION, MODEL_FORMAT_VERSION_MAX};
 use std::path::Path;
 
 /// Errors while reading or writing model files.
@@ -15,14 +15,17 @@ pub enum ModelIoError {
     },
     #[error("not a simpylink model (format = {0:?})")]
     WrongFormat(String),
-    #[error("unsupported format_version {0} (supported: 1)")]
+    #[error("unsupported format_version {0} (supported: 1, 2)")]
     UnsupportedVersion(u32),
 }
 
-/// Pretty JSON + trailing newline. Deterministic.
+/// Pretty JSON + trailing newline. Deterministic. `format_version` is written as
+/// [`Model::required_format_version`], so models without v2 features stay v1.
 pub fn to_json_string(model: &Model) -> String {
+    let mut m = model.clone();
+    m.format_version = model.required_format_version();
     // Model contains only string-keyed maps and numbers: serialization is infallible.
-    let mut s = serde_json::to_string_pretty(model).expect("Model serialization is infallible");
+    let mut s = serde_json::to_string_pretty(&m).expect("Model serialization is infallible");
     s.push('\n');
     s
 }
@@ -54,7 +57,7 @@ pub fn from_json_str(s: &str) -> Result<Model, ModelIoError> {
         .get("format_version")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
-    if v != MODEL_FORMAT_VERSION {
+    if !(MODEL_FORMAT_VERSION..=MODEL_FORMAT_VERSION_MAX).contains(&v) {
         return Err(ModelIoError::UnsupportedVersion(v));
     }
     let mut m: Model = serde_json::from_value(value).map_err(|e| ModelIoError::Parse {

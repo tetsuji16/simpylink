@@ -10,3 +10,4 @@ These files are copies of the design issues on GitHub. The GitHub issue is the s
 | 04-python-codegen-and-runner.md | DES-04 #20 |
 | 05-canvas-interaction.md | DES-05 #21 |
 | 06-slx.md | DES-06 #22 |
+| 07-m6-design.md | DES-07（M6 拡張と M5/M7 の残り。GitHub Issue ではなく本ファイルが正） |
