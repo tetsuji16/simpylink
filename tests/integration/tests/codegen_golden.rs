@@ -83,6 +83,32 @@ fn model_name_quotes_are_escaped() {
 }
 
 #[test]
+fn quoted_model_name_compiles() {
+    let mut model = load_fixture("gain_constant");
+    model.name = "my\"model\\dir".into();
+    let ir = sim_ir::compile(&model).unwrap().ir;
+    let code = generate(&ir, &CodegenOptions::default()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(&code.file_name);
+    std::fs::write(&path, &code.source).unwrap();
+    let env = sim_runner::discover_python(&sim_runner::RunnerConfig::default())
+        .expect("Python 3.10+ is required for the generated-code tests");
+    let output = std::process::Command::new(&env.program)
+        .args(&env.prefix_args)
+        .arg("-m")
+        .arg("py_compile")
+        .arg(&path)
+        .output()
+        .expect("failed to start Python");
+    assert!(
+        output.status.success(),
+        "py_compile failed for {}:\n{}",
+        code.file_name,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn deterministic_and_clean() {
     let a = gen("pi_loop");
     assert_eq!(a, gen("pi_loop"));
