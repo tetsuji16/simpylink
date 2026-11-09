@@ -55,6 +55,45 @@ fn opaque_block_port_counts_are_used_for_validation() {
     assert!(port_counts(&block).is_err());
     block.params.clear();
     assert!(port_counts(&block).is_err());
+
+    let source = Block {
+        sid: BlockId(2),
+        block_type: "Constant".into(),
+        name: "C".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [
+            ("Value".into(), "1".into()),
+            ("SampleTime".into(), "inf".into()),
+        ]
+        .into_iter()
+        .collect(),
+        system: None,
+    };
+    let mut model = Model::new("opaque");
+    model.root.blocks = vec![
+        source,
+        Block {
+            sid: BlockId(1),
+            block_type: "Terminator".into(),
+            name: "T".into(),
+            position: Rect::new(40.0, 0.0, 70.0, 30.0),
+            orientation: Orientation::Right,
+            params: [(OPAQUE_INPUTS.into(), "1".into())].into_iter().collect(),
+            system: None,
+        },
+    ];
+    model.root.lines.push(Line {
+        id: LineId(1),
+        src: pr(2, 1),
+        points: vec![],
+        dst: Some(pr(1, 1)),
+        branches: vec![],
+        name: String::new(),
+    });
+    let diagnostics = validate_model(&model);
+    assert!(diagnostics.iter().any(|d| d.code == "E_UNKNOWN_BLOCK_TYPE"));
+    assert!(!diagnostics.iter().any(|d| d.code == "E_PORT_OUT_OF_RANGE"));
 }
 
 #[test]

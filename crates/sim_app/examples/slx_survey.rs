@@ -3,7 +3,7 @@ use sim_core::validate::validate_model;
 use sim_ir::compile::compile;
 use sim_slx::opc::read_package;
 use sim_slx::xml::parse_xml;
-use sim_slx::{read_slx, read_slx_bytes, write_slx_bytes};
+use sim_slx::{read_slx_bytes, write_slx_bytes};
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -24,12 +24,11 @@ fn package_p_count(bytes: &[u8]) -> usize {
 }
 
 fn version(path: &Path) -> String {
-    read_slx(path)
+    std::fs::read(path)
         .ok()
+        .and_then(|bytes| read_package(&bytes).ok())
         .and_then(|imp| {
-            imp.preserved
-                .package
-                .part("metadata/coreProperties.xml")
+            imp.part("metadata/coreProperties.xml")
                 .and_then(|p| parse_xml("metadata/coreProperties.xml", &p.data).ok())
                 .and_then(|d| {
                     fn find(e: &sim_slx::xml::XmlElement) -> Option<String> {
