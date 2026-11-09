@@ -275,6 +275,111 @@ fn changed_parameter_patches_only_its_original_value() {
 }
 
 #[test]
+fn preserved_export_adds_and_deletes_only_requested_blocks() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, 10, 40, 40]</P><P Name="Gain">3</P></Block><Block BlockType="Terminator" Name="T" SID="2"><PortCounts in="1"/></Block><Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let mut imp = read_slx_bytes(&z, "m").unwrap();
+    let original = String::from_utf8(root.to_vec()).unwrap();
+    let mut added = sim_core::model::Block {
+        sid: sim_core::ids::BlockId(3),
+        block_type: "Constant".into(),
+        name: "C".into(),
+        position: sim_core::geom::Rect::new(60.0, 10.0, 90.0, 40.0),
+        orientation: sim_core::model::Orientation::Right,
+        params: [
+            ("Value".into(), "4".into()),
+            ("SampleTime".into(), "inf".into()),
+        ]
+        .into_iter()
+        .collect(),
+        system: None,
+    };
+    sim_core::library::fill_default_params(&mut added);
+    imp.model.root.insert_block_sorted(added);
+    imp.model.next_sid = 4;
+    let out = read_package(&write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap()).unwrap();
+    let xml = String::from_utf8_lossy(&out.part("simulink/systems/system_root.xml").unwrap().data);
+    assert!(xml.contains("BlockType=\"Gain\" Name=\"G\" SID=\"1\""));
+    assert!(xml.contains("BlockType=\"Terminator\" Name=\"T\" SID=\"2\""));
+    assert!(xml.contains("BlockType=\"Constant\" Name=\"C\" SID=\"3\""));
+    assert!(original.contains("SID=\"1\""));
+    assert_eq!(
+        read_slx_bytes(&write_package(&out).unwrap(), "m")
+            .unwrap()
+            .model,
+        imp.model
+    );
+
+    imp.model.root.blocks.retain(|b| b.sid.0 != 2);
+    let out = read_package(&write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap()).unwrap();
+    let xml = String::from_utf8_lossy(&out.part("simulink/systems/system_root.xml").unwrap().data);
+    assert!(xml.contains("SID=\"1\""));
+    assert!(!xml.contains("SID=\"2\""));
+    assert!(xml.contains("<P Name=\"Dst\">2#in:1</P>"));
+}
+
+#[test]
+fn changed_lines_are_rebuilt_and_non_split_systems_are_patched() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[0, 0, 30, 30]</P><P Name="Gain">3</P></Block><Block BlockType="Scope" Name="S" SID="2"><P Name="NumInputPorts">1</P></Block><Block BlockType="Terminator" Name="T" SID="3"><PortCounts in="1"/></Block><Line><P Name="Src">1#out:1</P><P Name="ZOrder">7</P><Branch><P Name="Points">[0, 20]</P><P Name="Dst">2#in:1</P></Branch><Branch><P Name="Dst">3#in:1</P></Branch></Line></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let mut imp = read_slx_bytes(&z, "split").unwrap();
+    imp.model.root.blocks.retain(|b| b.sid.0 != 3);
+    imp.model.next_sid = 3;
+    imp.model.root.lines[0]
+        .branches
+        .retain(|b| b.dst.is_some_and(|d| d.block.0 != 3));
+    let out = read_package(&write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap()).unwrap();
+    let xml = String::from_utf8_lossy(&out.part("simulink/systems/system_root.xml").unwrap().data);
+    assert!(!xml.contains("ZOrder"));
+    assert!(!xml.contains("Points"));
+    assert!(xml.contains("2#in:1"));
+    assert!(!xml.contains("3#in:1"));
+    assert_eq!(
+        read_slx_bytes(&write_package(&out).unwrap(), "split")
+            .unwrap()
+            .model,
+        imp.model
+    );
+
+    let bd = br#"<ModelInformation><Model Name="old"><System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[0, 0, 30, 30]</P><P Name="Gain">3</P></Block></System></Model></ModelInformation>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/blockdiagram.xml", bd),
+    ]);
+    let mut imp = read_slx_bytes(&z, "old").unwrap();
+    imp.model.root.blocks[0]
+        .params
+        .insert("Gain".into(), "5".into());
+    let out = write_slx_bytes(&imp.model, Some(&imp.preserved)).unwrap();
+    assert_eq!(read_slx_bytes(&out, "old").unwrap().model, imp.model);
+}
+
+#[test]
+fn missing_original_sid_returns_error_without_panicking() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Gain">3</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let mut imp = read_slx_bytes(&z, "m").unwrap();
+    imp.model.root.blocks[0]
+        .params
+        .insert("Gain".into(), "5".into());
+    imp.preserved
+        .package
+        .set_part("simulink/systems/system_root.xml", b"<System/>".to_vec());
+    assert!(
+        matches!(write_slx_bytes(&imp.model, Some(&imp.preserved)), Err(SlxError::Unsupported(message)) if message.contains("block SID 1 not found"))
+    );
+}
+
+#[test]
 fn r2026b_json_solver_settings_and_infinity_fallback() {
     let root = br#"<System><Block BlockType="Constant" Name="C" SID="1"/></System>"#;
     let info = br#"{"ConfigSetInfo":[{"Active":true,"PartName":"/simulink/configSet0.json"}]}"#;
