@@ -159,8 +159,8 @@ fn assign_sids(raw: &[String]) -> SidAssignment {
     let mut seen = BTreeMap::<String, usize>::new();
     for sid in raw {
         let occurrence = seen.entry(sid.clone()).or_default();
-        let id = if *occurrence == 0 && counts.get(sid) == Some(&1) {
-            sid.parse::<u32>().ok().map(BlockId).unwrap_or(BlockId(0))
+        let id = if *occurrence == 0 && counts.get(sid) == Some(&1) && sid.parse::<u32>().is_ok() {
+            sid.parse::<u32>().map(BlockId).unwrap_or(BlockId(0))
         } else {
             while used.contains(&next) {
                 next = next.saturating_add(1);

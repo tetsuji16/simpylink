@@ -354,9 +354,25 @@ fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
     ]);
     let imp = read_slx_bytes(&z, "m").unwrap();
     assert_eq!(imp.model.root.lines.len(), 4);
-    assert!(!sim_core::validate::validate_model(&imp.model)
-        .iter()
-        .any(|d| d.code == "E_PORT_OUT_OF_RANGE"));
+    assert_eq!(
+        imp.model.root.blocks[1]
+            .params
+            .get("__opaque_inputs")
+            .map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(
+        imp.model.root.blocks[3]
+            .params
+            .get("__opaque_outputs")
+            .map(String::as_str),
+        Some("2")
+    );
+    let diagnostics = sim_core::validate::validate_model(&imp.model);
+    assert!(
+        !diagnostics.iter().any(|d| d.code == "E_PORT_OUT_OF_RANGE"),
+        "{diagnostics:?}"
+    );
     assert!(imp
         .report
         .dropped
