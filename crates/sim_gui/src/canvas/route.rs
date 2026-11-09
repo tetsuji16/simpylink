@@ -14,12 +14,19 @@ pub const NAME_CLEARANCE: f64 = 18.0;
 /// x = `x0` and `x1`: below `base + FEEDBACK_GAP` and below the name labels of
 /// the blocks in that span that sit in the same row (so the line does not
 /// cross block names, issue #44).
+///
+/// The blocks touching `x0`/`x1` are the route's own source and destination.
+/// Their clearance is already covered by `base + FEEDBACK_GAP`, so only blocks
+/// strictly between the endpoints can push the line further down.
 pub fn feedback_level(sys: &System, x0: f64, x1: f64, base: f64) -> f64 {
     let (lo, hi) = (x0.min(x1) - STUB, x0.max(x1) + STUB);
     let mut y = base + FEEDBACK_GAP;
+    let at_endpoint = |r: sim_core::geom::Rect| {
+        (r.left..=r.right).contains(&x0) || (r.left..=r.right).contains(&x1)
+    };
     for b in &sys.blocks {
         let r = b.position;
-        if r.right >= lo && r.left <= hi && r.top <= base + FEEDBACK_GAP {
+        if r.right >= lo && r.left <= hi && r.top <= base + FEEDBACK_GAP && !at_endpoint(r) {
             y = y.max(r.bottom + NAME_CLEARANCE + 6.0);
         }
     }
@@ -198,15 +205,40 @@ mod tests {
     use sim_core::ids::BlockId;
     use sim_core::model::Block;
 
-    fn blk(sid: u32, r: Rect) -> Block {
+    fn block(sid: u32, block_type: &str, r: Rect, params: &[(&str, &str)]) -> Block {
         Block {
             sid: BlockId(sid),
-            block_type: "Gain".into(),
+            block_type: block_type.into(),
             name: format!("G{sid}"),
             position: r,
             orientation: Orientation::Right,
-            params: Default::default(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
             system: None,
+        }
+    }
+
+    fn blk(sid: u32, r: Rect) -> Block {
+        block(sid, "Gain", r, &[])
+    }
+
+    fn line(id: u32, src: PortRef, dst: Option<PortRef>, branches: Vec<Branch>) -> Line {
+        Line {
+            id: LineId(id),
+            src,
+            points: vec![],
+            dst,
+            branches,
+            name: String::new(),
+        }
+    }
+
+    fn pr(block: u32, port: u32) -> PortRef {
+        PortRef {
+            block: BlockId(block),
+            port,
         }
     }
 
@@ -224,6 +256,160 @@ mod tests {
         assert_eq!(
             feedback_level(&sys, 600.0, 500.0, 70.0),
             70.0 + FEEDBACK_GAP
+        );
+        // The endpoint blocks are already covered by `base + FEEDBACK_GAP`;
+        // they must not add label clearance on top of it (issue #44 §H-3).
+        let mut sys = System::default();
+        sys.blocks.push(blk(1, Rect::new(80.0, 5.0, 100.0, 25.0)));
+        sys.blocks.push(blk(2, Rect::new(140.0, 0.0, 170.0, 30.0)));
+        assert_eq!(feedback_level(&sys, 170.0, 80.0, 30.0), 50.0);
+    }
+
+    #[test]
+    fn auto_route_cases() {
+        let p = |x, y| Point::new(x, y);
+        assert_eq!(
+            auto_route(p(80.0, 65.0), p(130.0, 65.0), 100.0),
+            vec![p(80.0, 65.0), p(130.0, 65.0)]
+        );
+        assert_eq!(
+            auto_route(p(80.0, 65.0), p(130.0, 95.0), 100.0),
+            vec![
+                p(80.0, 65.0),
+                p(105.0, 65.0),
+                p(105.0, 95.0),
+                p(130.0, 95.0)
+            ]
+        );
+        assert_eq!(
+            auto_route(p(80.0, 65.0), p(105.0, 95.0), 100.0),
+            vec![
+                p(80.0, 65.0),
+                p(95.0, 65.0),
+                p(95.0, 100.0),
+                p(90.0, 100.0),
+                p(90.0, 95.0),
+                p(105.0, 95.0),
+            ]
+        );
+        assert_eq!(
+            auto_route(p(160.0, 65.0), p(130.0, 75.0), 100.0),
+            vec![
+                p(160.0, 65.0),
+                p(175.0, 65.0),
+                p(175.0, 100.0),
+                p(115.0, 100.0),
+                p(115.0, 75.0),
+                p(130.0, 75.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn tap_positions() {
+        let points = [
+            Point::new(80.0, 65.0),
+            Point::new(105.0, 65.0),
+            Point::new(105.0, 95.0),
+            Point::new(130.0, 95.0),
+        ];
+        assert_eq!(
+            tap_position(&points, TapPoint { segment: 1, t: 0.5 }),
+            Point::new(105.0, 80.0)
+        );
+        assert_eq!(
+            tap_position(&points, TapPoint { segment: 0, t: 0.0 }),
+            Point::new(80.0, 65.0)
+        );
+        assert_eq!(
+            tap_position(&points, TapPoint { segment: 9, t: 2.0 }),
+            Point::new(130.0, 95.0)
+        );
+    }
+
+    #[test]
+    fn feedback_path_and_branch_tap() {
+        let mut sys = System::default();
+        sys.blocks
+            .push(block(1, "Constant", Rect::new(0.0, 0.0, 30.0, 30.0), &[]));
+        sys.blocks.push(block(
+            2,
+            "Sum",
+            Rect::new(80.0, 5.0, 100.0, 25.0),
+            &[("Inputs", "+-")],
+        ));
+        sys.blocks
+            .push(block(3, "Gain", Rect::new(140.0, 0.0, 170.0, 30.0), &[]));
+        sys.lines = vec![
+            line(1, pr(2, 1), Some(pr(3, 1)), vec![]),
+            line(2, pr(3, 1), Some(pr(2, 2)), vec![]),
+        ];
+        let paths = all_paths(&sys);
+        assert_eq!(
+            paths[1].root.points,
+            vec![
+                Point::new(170.0, 15.0),
+                Point::new(185.0, 15.0),
+                Point::new(185.0, 50.0),
+                Point::new(65.0, 50.0),
+                Point::new(65.0, 20.0),
+                Point::new(80.0, 20.0),
+            ]
+        );
+        assert_eq!(paths[1].root.dst, Some(pr(2, 2)));
+
+        sys.blocks
+            .push(block(4, "Scope", Rect::new(200.0, 0.0, 230.0, 30.0), &[]));
+        sys.lines = vec![line(
+            1,
+            pr(3, 1),
+            Some(pr(4, 1)),
+            vec![Branch {
+                tap: TapPoint { segment: 0, t: 0.5 },
+                points: vec![],
+                dst: Some(pr(2, 2)),
+                branches: vec![],
+            }],
+        )];
+        let paths = all_paths(&sys);
+        assert_eq!(
+            paths[0].root.points,
+            vec![Point::new(170.0, 15.0), Point::new(200.0, 15.0)]
+        );
+        assert_eq!(paths[0].root.children.len(), 1);
+        assert_eq!(
+            paths[0].root.children[0].points,
+            vec![
+                Point::new(185.0, 15.0),
+                Point::new(200.0, 15.0),
+                Point::new(200.0, 54.0),
+                Point::new(65.0, 54.0),
+                Point::new(65.0, 20.0),
+                Point::new(80.0, 20.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_blocks_and_short_paths() {
+        let mut sys = System::default();
+        sys.blocks.push(blk(1, Rect::new(0.0, 0.0, 30.0, 30.0)));
+        assert!(line_path(&sys, &line(1, pr(99, 1), Some(pr(1, 1)), vec![])).is_none());
+
+        let dangling = line_path(&sys, &line(1, pr(1, 1), Some(pr(99, 1)), vec![])).unwrap();
+        assert_eq!(
+            dangling.root.points,
+            vec![Point::new(30.0, 15.0), Point::new(50.0, 15.0)]
+        );
+        assert_eq!(dangling.root.dst, None);
+
+        assert_eq!(
+            tap_position(&[Point::new(3.0, 4.0)], TapPoint { segment: 0, t: 0.0 }),
+            Point::new(3.0, 4.0)
+        );
+        assert_eq!(
+            tap_position(&[], TapPoint { segment: 0, t: 0.0 }),
+            Point::default()
         );
     }
 }
