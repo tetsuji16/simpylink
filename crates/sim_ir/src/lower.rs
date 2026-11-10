@@ -115,6 +115,10 @@ pub fn lower_block_in(
             },
             l.st()?,
         ),
+        "Ground" => (
+            IrBlockKind::Constant { value: 0.0 },
+            Some(SampleTime::Constant),
+        ),
         "Step" => (
             IrBlockKind::Step {
                 time: l.scalar("Time")?,
@@ -167,6 +171,7 @@ pub fn lower_block_in(
             )
         }
         "Scope" => (IrBlockKind::Scope, None),
+        "Terminator" => (IrBlockKind::Terminator, None),
         "Outport" if is_root => {
             let port = l
                 .raw("Port")?
@@ -461,6 +466,16 @@ mod tests {
         let l = lower_block(&b, true, &root).unwrap();
         assert_eq!(l.kind, IrBlockKind::Scope);
         assert_eq!(l.sample_time, None);
+
+        let b = block(9, "Ground", "Ground", &[]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Constant { value: 0.0 });
+        assert_eq!(l.sample_time, Some(SampleTime::Constant));
+
+        let b = block(10, "Terminator", "Terminator", &[]);
+        let l = lower_block(&b, true, &root).unwrap();
+        assert_eq!(l.kind, IrBlockKind::Terminator);
+        assert!(l.kind.direct_feedthrough());
 
         // Outport root
         let b = block(9, "Out1", "Outport", &[("Port", "2")]);

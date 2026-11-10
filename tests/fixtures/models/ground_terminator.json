@@ -1,0 +1,99 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "ground_terminator",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 0.001,
+    "abs_tol": 1e-6,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 6,
+  "next_line_id": 4,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Ground",
+        "name": "Ground",
+        "position": [50.0, 45.0, 70.0, 65.0],
+        "orientation": "right",
+        "params": {}
+      },
+      {
+        "sid": 2,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [50.0, 105.0, 80.0, 135.0],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "2"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Sum",
+        "name": "Sum",
+        "position": [130.0, 65.0, 150.0, 85.0],
+        "orientation": "right",
+        "params": {
+          "IconShape": "round",
+          "Inputs": "|+-",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [220.0, 45.0, 250.0, 77.0],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "1"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Terminator",
+        "name": "Terminator",
+        "position": [220.0, 95.0, 240.0, 115.0],
+        "orientation": "right",
+        "params": {}
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": { "block": 2, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": { "block": 3, "port": 1 },
+        "points": [],
+        "dst": { "block": 4, "port": 1 },
+        "branches": [
+          {
+            "tap": { "segment": 0, "t": 0.5 },
+            "points": [],
+            "dst": { "block": 5, "port": 1 },
+            "branches": []
+          }
+        ]
+      }
+    ]
+  }
+}

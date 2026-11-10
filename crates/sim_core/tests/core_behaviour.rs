@@ -35,7 +35,7 @@ fn pr(b: u32, p: u32) -> PortRef {
 fn opaque_block_port_counts_are_used_for_validation() {
     let mut block = Block {
         sid: BlockId(1),
-        block_type: "Terminator".into(),
+        block_type: "UnknownOpaqueBlock".into(),
         name: "T".into(),
         position: Rect::new(0.0, 0.0, 30.0, 30.0),
         orientation: Orientation::Right,
@@ -75,7 +75,7 @@ fn opaque_block_port_counts_are_used_for_validation() {
         source,
         Block {
             sid: BlockId(1),
-            block_type: "Terminator".into(),
+            block_type: "UnknownOpaqueBlock".into(),
             name: "T".into(),
             position: Rect::new(40.0, 0.0, 70.0, 30.0),
             orientation: Orientation::Right,

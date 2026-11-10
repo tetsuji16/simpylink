@@ -103,6 +103,8 @@ pub enum IrBlockKind {
         threshold: f64,
     },
     Scope,
+    /// Consume an input signal without producing an output.
+    Terminator,
     Outport {
         port: u32,
     },
@@ -156,6 +158,7 @@ impl IrBlockKind {
             | IrBlockKind::DiscreteIntegrator { .. }
             | IrBlockKind::SineWave { .. }
             | IrBlockKind::Clock => false,
+            IrBlockKind::Terminator => true,
             _ => true,
         }
     }

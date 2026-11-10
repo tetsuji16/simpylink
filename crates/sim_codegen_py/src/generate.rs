@@ -192,7 +192,7 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> Option<String> {
             format!("{vb}_AMPLITUDE * math.sin({vb}_FREQUENCY * t + {vb}_PHASE) + {vb}_BIAS")
         }
         IrBlockKind::Clock => "t".into(),
-        IrBlockKind::Scope | IrBlockKind::Outport { .. } => return None,
+        IrBlockKind::Scope | IrBlockKind::Terminator | IrBlockKind::Outport { .. } => return None,
     })
 }
 
