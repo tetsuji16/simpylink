@@ -511,6 +511,26 @@ static REGISTRY: &[BlockSpec] = &[
         base_name: "Switch",
         description: "Pass input 1 or input 3 depending on input 2 (no zero-crossing detection)",
     },
+    BlockSpec {
+        block_type: "Ground",
+        display_name: "Ground",
+        library: "Sources",
+        default_size: (20.0, 20.0),
+        params: &[],
+        ports: ports_0_1,
+        base_name: "Ground",
+        description: "Output a constant zero",
+    },
+    BlockSpec {
+        block_type: "Terminator",
+        display_name: "Terminator",
+        library: "Sinks",
+        default_size: (20.0, 20.0),
+        params: &[],
+        ports: ports_1_0,
+        base_name: "Terminator",
+        description: "Terminate an unused signal",
+    },
 ];
 
 /// All block specs.
@@ -771,6 +791,24 @@ mod tests {
             pc(blk("Nope", &[])),
             Err("unknown block type 'Nope'".into())
         );
+    }
+
+    #[test]
+    fn ground_and_terminator_specs() {
+        let pc = |b: Block| port_counts(&b).map(|p| (p.inputs, p.outputs));
+        let ground = spec("Ground").unwrap();
+        assert_eq!(ground.library, "Sources");
+        assert_eq!(ground.default_size, (20.0, 20.0));
+        assert!(ground.params.is_empty());
+        assert_eq!(ground.base_name, "Ground");
+        assert_eq!(pc(blk("Ground", &[])), Ok((0, 1)));
+
+        let terminator = spec("Terminator").unwrap();
+        assert_eq!(terminator.library, "Sinks");
+        assert_eq!(terminator.default_size, (20.0, 20.0));
+        assert!(terminator.params.is_empty());
+        assert_eq!(terminator.base_name, "Terminator");
+        assert_eq!(pc(blk("Terminator", &[])), Ok((1, 0)));
     }
     #[test]
     fn params() {

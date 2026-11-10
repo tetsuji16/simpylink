@@ -634,7 +634,7 @@ fn reference_pid_controller_uses_instance_data() {
 #[test]
 fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
     let root = br#"<System>
-<Block BlockType="Constant" Name="C" SID="1"/><Block BlockType="Terminator" Name="T" SID="2"><PortCounts in="1"/></Block>
+<Block BlockType="Constant" Name="C" SID="1"/><Block BlockType="UnknownOpaqueBlock" Name="T" SID="2"><PortCounts in="1"/></Block>
 <Block BlockType="Constant" Name="C1" SID="3"/><Block BlockType="Demux" Name="D" SID="4"><PortCounts in="1" out="2"/></Block><Block BlockType="Scope" Name="S" SID="5"><P Name="NumInputPorts">2</P></Block>
 <Block BlockType="SimscapeBlock" Name="P1" SID="6"/><Block BlockType="SimscapeBlock" Name="P2" SID="7"/>
 <Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line><Line><P Name="Src">3#out:1</P><P Name="Dst">4#in:1</P></Line>
