@@ -125,12 +125,10 @@ fn validate_cases() {
         .iter()
         .any(|d| d.message == "parameter 'Gain' is missing"));
     let mut m = m0.clone();
-    m.root.blocks[1]
-        .params
-        .insert("Gain".into(), "[1 2]".into());
+    m.root.blocks[1].params.insert("Gain".into(), "K".into());
     assert!(validate_model(&m)
         .iter()
-        .any(|d| d.message == "parameter 'Gain': expected a scalar"));
+        .any(|d| d.message == "parameter 'Gain': unknown identifier 'K' (at byte 0)"));
     let mut m = m0.clone();
     m.root.lines[1].src.block = BlockId(99);
     assert!(codes(&m).contains(&"E_LINE_SRC_MISSING".into()));

@@ -57,8 +57,11 @@ fn ok_with_change_closes_and_executes() {
 #[test]
 fn invalid_value_keeps_dialog_open() {
     let mut d = open_gain();
-    d.set_value(0, "[1 2]".into());
-    assert_eq!(d.fields[0].error, Some("expected a scalar".to_string()));
+    d.set_value(0, "K".into());
+    assert_eq!(
+        d.fields[0].error,
+        Some("unknown identifier 'K' (at byte 0)".to_string())
+    );
     assert_eq!(d.press(DialogButton::Ok), DialogOutcome::KeepOpen);
 }
 

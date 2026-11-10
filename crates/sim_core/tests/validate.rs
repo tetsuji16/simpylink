@@ -144,15 +144,17 @@ fn missing_and_invalid_parameters_are_reported() {
     assert_eq!(diagnostics[0].code, E_INVALID_PARAM);
     assert_eq!(diagnostics[0].message, "parameter 'Gain' is missing");
 
+    // Vector and matrix gains are accepted by the schema since #161; only the
+    // expression itself can be invalid.
     let mut model = fixture("step_gain_scope");
     model.root.blocks[1]
         .params
-        .insert("Gain".into(), "[1 2]".into());
+        .insert("Gain".into(), "K".into());
     let diagnostics = validate_model(&model);
     assert_eq!(diagnostics[0].code, E_INVALID_PARAM);
     assert_eq!(
         diagnostics[0].message,
-        "parameter 'Gain': expected a scalar"
+        "parameter 'Gain': unknown identifier 'K' (at byte 0)"
     );
 }
 

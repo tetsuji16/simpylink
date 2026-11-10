@@ -75,6 +75,10 @@ pub enum IrBlockKind {
     Constant {
         value: f64,
     },
+    /// Constant with two or more elements (vector signals, #161).
+    ConstantVector {
+        values: Vec<f64>,
+    },
     Step {
         time: f64,
         before: f64,
@@ -82,6 +86,18 @@ pub enum IrBlockKind {
     },
     Gain {
         gain: f64,
+    },
+    /// Gain with two or more elements (vector gains, #161).
+    GainVector {
+        gains: Vec<f64>,
+    },
+    /// Signal routing: one output built from all inputs (#161).
+    Mux {
+        widths: Vec<usize>,
+    },
+    /// Signal routing: one input split into several outputs (#161).
+    Demux {
+        widths: Vec<usize>,
     },
     Sum {
         signs: Vec<i8>,
@@ -152,6 +168,7 @@ impl IrBlockKind {
         match self {
             IrBlockKind::TransferFcn { d, .. } | IrBlockKind::StateSpace { d, .. } => *d != 0.0,
             IrBlockKind::Constant { .. }
+            | IrBlockKind::ConstantVector { .. }
             | IrBlockKind::Step { .. }
             | IrBlockKind::Integrator { .. }
             | IrBlockKind::UnitDelay { .. }

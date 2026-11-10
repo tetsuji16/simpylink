@@ -5,6 +5,7 @@ use crate::naming::{log_name, var_base};
 use crate::sample_time::{discrete_rates, rate_index, resolve_sample_times, StInput};
 use crate::sort::{df_edges, loop_message, sorted_order};
 use crate::types::*;
+use crate::width::propagate_widths;
 use sim_core::diag::{codes::*, has_errors, Diagnostic, Location, Severity};
 use sim_core::ids::BlockId;
 use sim_core::model::{Model, PortRef, SolverKind};
@@ -82,7 +83,81 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
         return fail(diags);
     }
     let conn = build_connectivity(model);
-    let (signals, sigmap) = allocate_signals(model, &conn);
+    let (mut signals, sigmap) = allocate_signals(model, &conn);
+    // signal widths (#161)
+    match propagate_widths(&conn, &lowered) {
+        Ok(w) => {
+            for s in signals.iter_mut() {
+                s.width = w.get(&s.source).copied().unwrap_or(1);
+            }
+            let input_width = |sid: BlockId, port: u32| {
+                conn.driver
+                    .get(&PortRef { block: sid, port })
+                    .and_then(|src| w.get(src).copied())
+                    .unwrap_or(1)
+            };
+            for (sid, (l, fb)) in lowered.iter_mut() {
+                let c = conn
+                    .counts
+                    .get(sid)
+                    .copied()
+                    .unwrap_or(sim_core::library::PortCounts {
+                        inputs: 0,
+                        outputs: 0,
+                    });
+                match &mut l.kind {
+                    IrBlockKind::Mux { widths } => {
+                        *widths = (1..=c.inputs).map(|p| input_width(*sid, p)).collect();
+                    }
+                    IrBlockKind::Demux { widths } if widths.is_empty() => {
+                        *widths = (1..=c.outputs)
+                            .map(|p| {
+                                w.get(&PortRef {
+                                    block: *sid,
+                                    port: p,
+                                })
+                                .copied()
+                                .unwrap_or(1)
+                            })
+                            .collect();
+                    }
+                    _ => {}
+                }
+                if matches!(
+                    l.kind,
+                    IrBlockKind::TransferFcn { .. }
+                        | IrBlockKind::StateSpace { .. }
+                        | IrBlockKind::Pid { .. }
+                ) {
+                    for p in 1..=c.inputs {
+                        if input_width(*sid, p) > 1 {
+                            diags.push(Diagnostic::error(
+                                E_UNSUPPORTED_FEATURE,
+                                format!("vector input to '{}' is not supported", fb.block.name),
+                                Location::block(&fb.path, *sid),
+                            ));
+                        }
+                    }
+                }
+            }
+            // code generation for vectors lands in #162
+            if let Some(sig) = signals.iter().find(|s| s.width > 1) {
+                let (_, fb) = &lowered[&sig.source.block];
+                diags.push(Diagnostic::error(
+                    E_UNSUPPORTED_FEATURE,
+                    "vector signals are not supported in code generation yet",
+                    Location::block(&fb.path, sig.source.block),
+                ));
+            }
+        }
+        Err(errs) => {
+            diags.extend(errs);
+            return fail(diags);
+        }
+    }
+    if has_errors(&diags) {
+        return fail(diags);
+    }
     // sort
     let df: BTreeMap<BlockId, bool> = lowered
         .iter()

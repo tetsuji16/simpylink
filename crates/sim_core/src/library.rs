@@ -188,6 +188,66 @@ fn product_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
         outputs: 1,
     })
 }
+fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = match p.get("Inputs") {
+        None => 2,
+        Some(s) => s
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "must be a positive integer".to_string())?,
+    };
+    if n == 0 {
+        return Err("must be a positive integer".into());
+    }
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// Output widths of a Demux: a scalar `Outputs` gives that many equal parts.
+pub fn demux_widths(outputs: &str) -> Result<Vec<usize>, String> {
+    let bad = || "Outputs must be a positive integer or a vector of positive integers".to_string();
+    let v = parse_value(outputs).map_err(|_| bad())?;
+    let widths: Vec<usize> = match (v.as_scalar(), v.as_vector()) {
+        (Some(p), _) => {
+            if p < 1.0 || p.fract() != 0.0 {
+                return Err(bad());
+            }
+            vec![p as usize]
+        }
+        (None, Some(items)) => items
+            .iter()
+            .map(|x| {
+                if *x < 1.0 || x.fract() != 0.0 {
+                    Err(bad())
+                } else {
+                    Ok(*x as usize)
+                }
+            })
+            .collect::<Result<Vec<usize>, String>>()?,
+        _ => return Err(bad()),
+    };
+    if widths.is_empty() {
+        return Err(bad());
+    }
+    Ok(widths)
+}
+
+fn demux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let raw = p.get("Outputs").map(String::as_str).unwrap_or("2");
+    let widths = demux_widths(raw)?;
+    // A scalar `Outputs` is the number of equal outputs; a vector lists each width.
+    let outputs = match parse_value(raw) {
+        Ok(v) => match v.as_scalar() {
+            Some(n) => n as u32,
+            None => widths.len() as u32,
+        },
+        Err(_) => return Err("Outputs must be a positive integer or a vector".into()),
+    };
+    Ok(PortCounts { inputs: 1, outputs })
+}
+
 fn scope_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let n = match p.get("NumInputPorts") {
         None => 1,
@@ -212,7 +272,7 @@ static REGISTRY: &[BlockSpec] = &[
         library: "Sources",
         default_size: (30.0, 30.0),
         params: &[
-            p("Value", "Constant value", "1", SCALAR),
+            p("Value", "Constant value", "1", MATRIX),
             p("SampleTime", "Sample time", "inf", ST),
         ],
         ports: ports_0_1,
@@ -240,7 +300,7 @@ static REGISTRY: &[BlockSpec] = &[
         library: "Math Operations",
         default_size: (30.0, 30.0),
         params: &[
-            p("Gain", "Gain", "1", SCALAR),
+            p("Gain", "Gain", "1", MATRIX),
             p("SampleTime", "Sample time (-1 for inherited)", "-1", ST),
         ],
         ports: ports_1_1,
@@ -535,6 +595,26 @@ static REGISTRY: &[BlockSpec] = &[
         ports: ports_1_0,
         base_name: "Terminator",
         description: "Terminate an unused signal",
+    },
+    BlockSpec {
+        block_type: "Mux",
+        display_name: "Mux",
+        library: "Signal Routing",
+        default_size: (5.0, 40.0),
+        params: &[p("Inputs", "Number of inputs", "2", ParamKind::PositiveInt)],
+        ports: mux_ports,
+        base_name: "Mux",
+        description: "Combine inputs into one vector",
+    },
+    BlockSpec {
+        block_type: "Demux",
+        display_name: "Demux",
+        library: "Signal Routing",
+        default_size: (5.0, 40.0),
+        params: &[p("Outputs", "Number of outputs", "2", VECTOR)],
+        ports: demux_ports,
+        base_name: "Demux",
+        description: "Split a vector into several outputs",
     },
     BlockSpec {
         block_type: "Goto",

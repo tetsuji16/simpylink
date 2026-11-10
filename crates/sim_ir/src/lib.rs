@@ -8,6 +8,7 @@ pub mod realize;
 pub mod sample_time;
 pub mod sort;
 pub mod types;
+pub mod width;
 
 pub use compile::{compile, solver_method, CompileFailure, CompiledModel};
 pub use types::*;

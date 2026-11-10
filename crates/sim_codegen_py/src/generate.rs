@@ -117,7 +117,7 @@ fn period(b: &IrBlock) -> R<String> {
     }
 }
 
-fn output_expr(c: &Ctx, b: &IrBlock) -> Option<String> {
+fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
     let vb = b.var_base.to_uppercase();
     let s0 = b.cont_state.as_ref().map(|r| r.start).unwrap_or(0);
     let range = b
@@ -126,7 +126,7 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> Option<String> {
         .map(|r| format!("{}:{}", r.start, r.end))
         .unwrap_or_default();
     let d0 = b.disc_state.as_ref().map(|r| r.start).unwrap_or(0);
-    Some(match &b.kind {
+    Ok(Some(match &b.kind {
         IrBlockKind::Constant { .. } => format!("{vb}_VALUE"),
         IrBlockKind::Step { .. } => format!("{vb}_AFTER if t_seg >= {vb}_TIME else {vb}_BEFORE"),
         IrBlockKind::Gain { .. } => format!("{vb}_GAIN * {}", c.u(b, 0)),
@@ -192,8 +192,20 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> Option<String> {
             format!("{vb}_AMPLITUDE * math.sin({vb}_FREQUENCY * t + {vb}_PHASE) + {vb}_BIAS")
         }
         IrBlockKind::Clock => "t".into(),
-        IrBlockKind::Scope | IrBlockKind::Terminator | IrBlockKind::Outport { .. } => return None,
-    })
+        IrBlockKind::Scope | IrBlockKind::Terminator | IrBlockKind::Outport { .. } => {
+            return Ok(None)
+        }
+        // Vector code generation lands in #162.
+        IrBlockKind::ConstantVector { .. }
+        | IrBlockKind::GainVector { .. }
+        | IrBlockKind::Mux { .. }
+        | IrBlockKind::Demux { .. } => {
+            return Err(CodegenError::UnsupportedBlock {
+                name: b.name.clone(),
+                block_type: b.block_type.clone(),
+            })
+        }
+    }))
 }
 
 fn by_sid(ir: &SimIr) -> Vec<&IrBlock> {
@@ -323,7 +335,7 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
     w.line("\"\"\"Compute every block output at time t in execution order.\"\"\"");
     let mut assigned = vec![];
     for b in &ir.blocks {
-        let Some(expr) = output_expr(&c, b) else {
+        let Some(expr) = output_expr(&c, b)? else {
             continue;
         };
         let Some(out) = b.outputs.first() else {
