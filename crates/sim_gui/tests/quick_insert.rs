@@ -24,20 +24,28 @@ fn empty_query_returns_registry_order_with_limit() {
 
 #[test]
 fn prefix_matches_come_before_substring_matches() {
+    // The M6 registry has more than ten "s..." blocks, so limit 10 is filled by
+    // prefix matches alone and no substring match can appear.
     let got = types(&search_blocks("s", 10));
-    // Every "s..." block type/display name comes first, then substring matches.
-    let first_substring = got
+    assert!(
+        got.iter().all(|t| t.to_lowercase().starts_with('s')),
+        "got {got:?}"
+    );
+
+    // With a limit large enough to reach them, the substring matches follow.
+    let all = types(&search_blocks("s", 1000));
+    let first_substring = all
         .iter()
         .position(|t| !t.to_lowercase().starts_with('s'))
-        .unwrap_or(got.len());
-    assert!(first_substring >= 5, "got {got:?}");
-    for t in &got[first_substring..] {
+        .unwrap_or(all.len());
+    assert!(first_substring >= 5, "got {all:?}");
+    for t in &all[first_substring..] {
         assert!(
             t.to_lowercase().contains('s'),
             "{t} should be a substring match"
         );
     }
-    assert!(got.contains(&"Constant"), "got {got:?}");
+    assert!(all.contains(&"Constant"), "got {all:?}");
 }
 
 #[test]

@@ -1,0 +1,344 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "math_sqrt",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 1e-6,
+    "abs_tol": 1e-9,
+    "max_step": null,
+    "output_step": 1.0
+  },
+  "next_sid": 19,
+  "next_line_id": 20,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [20.0, 20.0, 50.0, 50.0],
+        "orientation": "right",
+        "params": {
+          "Value": "0.5",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Math",
+        "name": "Math Function",
+        "position": [100.0, 20.0, 130.0, 50.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "exp"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [400.0, 100.0, 430.0, 220.0],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "8"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Constant",
+        "name": "Constant1",
+        "position": [20.0, 70.0, 50.0, 100.0],
+        "orientation": "right",
+        "params": {
+          "Value": "2",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Math",
+        "name": "Math Function1",
+        "position": [100.0, 70.0, 130.0, 100.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "log"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "Constant",
+        "name": "Constant2",
+        "position": [20.0, 120.0, 50.0, 150.0],
+        "orientation": "right",
+        "params": {
+          "Value": "0.5",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 7,
+        "block_type": "Math",
+        "name": "Math Function2",
+        "position": [100.0, 120.0, 130.0, 150.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "10^u"
+        }
+      },
+      {
+        "sid": 8,
+        "block_type": "Constant",
+        "name": "Constant3",
+        "position": [20.0, 170.0, 50.0, 200.0],
+        "orientation": "right",
+        "params": {
+          "Value": "3",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 9,
+        "block_type": "Constant",
+        "name": "Constant4",
+        "position": [20.0, 220.0, 50.0, 250.0],
+        "orientation": "right",
+        "params": {
+          "Value": "4",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 10,
+        "block_type": "Math",
+        "name": "Math Function3",
+        "position": [100.0, 170.0, 130.0, 200.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "hypot"
+        }
+      },
+      {
+        "sid": 11,
+        "block_type": "Constant",
+        "name": "Constant5",
+        "position": [20.0, 270.0, 50.0, 300.0],
+        "orientation": "right",
+        "params": {
+          "Value": "-7",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 12,
+        "block_type": "Constant",
+        "name": "Constant6",
+        "position": [20.0, 320.0, 50.0, 350.0],
+        "orientation": "right",
+        "params": {
+          "Value": "3",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 13,
+        "block_type": "Math",
+        "name": "Math Function4",
+        "position": [100.0, 270.0, 130.0, 300.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "rem"
+        }
+      },
+      {
+        "sid": 14,
+        "block_type": "Math",
+        "name": "Math Function5",
+        "position": [100.0, 320.0, 130.0, 350.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "mod"
+        }
+      },
+      {
+        "sid": 15,
+        "block_type": "Constant",
+        "name": "Constant7",
+        "position": [20.0, 370.0, 50.0, 400.0],
+        "orientation": "right",
+        "params": {
+          "Value": "-4",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 16,
+        "block_type": "Sqrt",
+        "name": "Sqrt",
+        "position": [100.0, 370.0, 130.0, 400.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "signedSqrt"
+        }
+      },
+      {
+        "sid": 17,
+        "block_type": "Constant",
+        "name": "Constant8",
+        "position": [20.0, 420.0, 50.0, 450.0],
+        "orientation": "right",
+        "params": {
+          "Value": "3",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 18,
+        "block_type": "Math",
+        "name": "Math Function6",
+        "position": [100.0, 420.0, 130.0, 450.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "square"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 2, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": { "block": 2, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": { "block": 4, "port": 1 },
+        "points": [],
+        "dst": { "block": 5, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 4,
+        "src": { "block": 5, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": { "block": 6, "port": 1 },
+        "points": [],
+        "dst": { "block": 7, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 6,
+        "src": { "block": 7, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 3 },
+        "branches": []
+      },
+      {
+        "id": 7,
+        "src": { "block": 8, "port": 1 },
+        "points": [],
+        "dst": { "block": 10, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 8,
+        "src": { "block": 9, "port": 1 },
+        "points": [],
+        "dst": { "block": 10, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 9,
+        "src": { "block": 10, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 4 },
+        "branches": []
+      },
+      {
+        "id": 10,
+        "src": { "block": 11, "port": 1 },
+        "points": [],
+        "dst": { "block": 13, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 11,
+        "src": { "block": 12, "port": 1 },
+        "points": [],
+        "dst": { "block": 13, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 12,
+        "src": { "block": 13, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 5 },
+        "branches": []
+      },
+      {
+        "id": 13,
+        "src": { "block": 11, "port": 1 },
+        "points": [],
+        "dst": { "block": 14, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 14,
+        "src": { "block": 12, "port": 1 },
+        "points": [],
+        "dst": { "block": 14, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 15,
+        "src": { "block": 14, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 6 },
+        "branches": []
+      },
+      {
+        "id": 16,
+        "src": { "block": 15, "port": 1 },
+        "points": [],
+        "dst": { "block": 16, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 17,
+        "src": { "block": 16, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 7 },
+        "branches": []
+      },
+      {
+        "id": 18,
+        "src": { "block": 17, "port": 1 },
+        "points": [],
+        "dst": { "block": 18, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 19,
+        "src": { "block": 18, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 8 },
+        "branches": []
+      }
+    ]
+  }
+}

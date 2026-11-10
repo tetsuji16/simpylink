@@ -3,7 +3,7 @@ use crate::emit::{py_float, py_matrix, py_str, py_vector, PyWriter};
 use crate::runtime::RUNTIME_FORMAT1;
 use crate::{CodegenError, CodegenOptions, GeneratedCode};
 use sim_ir::naming::script_file_name;
-use sim_ir::{IrBlock, IrBlockKind, SignalId, SimIr, TrigOp};
+use sim_ir::{IrBlock, IrBlockKind, MathOp, SignalId, SimIr, SqrtOp, TrigOp};
 use std::collections::BTreeMap;
 
 type R<T> = Result<T, CodegenError>;
@@ -168,6 +168,33 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
         IrBlockKind::Signum => {
             let u = c.u(b, 0);
             format!("float(({u} > 0) - ({u} < 0))")
+        }
+        IrBlockKind::MathFn { op } => {
+            let (u1, u2) = (c.u(b, 0), c.u(b, 1));
+            match op {
+                MathOp::Exp => format!("math.exp({u1})"),
+                MathOp::Log => format!("math.log({u1})"),
+                MathOp::TenToU => format!("10.0 ** {u1}"),
+                MathOp::Log10 => format!("math.log10({u1})"),
+                MathOp::MagnitudeSquared | MathOp::Square => format!("{u1} * {u1}"),
+                MathOp::Sqrt => format!("math.sqrt({u1})"),
+                MathOp::Pow => format!("{u1} ** {u2}"),
+                MathOp::Conj | MathOp::Transpose | MathOp::Hermitian => u1,
+                MathOp::Reciprocal => format!("1.0 / {u1}"),
+                MathOp::Hypot => format!("math.hypot({u1}, {u2})"),
+                MathOp::Rem => format!("({u1} if {u2} == 0.0 else math.fmod({u1}, {u2}))"),
+                MathOp::Mod => {
+                    format!("({u1} if {u2} == 0.0 else {u1} - math.floor({u1} / {u2}) * {u2})")
+                }
+            }
+        }
+        IrBlockKind::Sqrt { op } => {
+            let u = c.u(b, 0);
+            match op {
+                SqrtOp::Sqrt => format!("math.sqrt({u})"),
+                SqrtOp::SignedSqrt => format!("math.copysign(math.sqrt(abs({u})), {u})"),
+                SqrtOp::RSqrt => format!("1.0 / math.sqrt({u})"),
+            }
         }
         IrBlockKind::Bias { .. } => format!("{} + {vb}_BIAS", c.u(b, 0)),
         IrBlockKind::Saturate { .. } => format!(

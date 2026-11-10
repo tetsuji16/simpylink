@@ -1,6 +1,6 @@
 //! Block lowering: parameter evaluation into IrBlockKind.
 use crate::realize::tf_to_ss;
-use crate::types::{IrBlockKind, SampleTime, TrigOp};
+use crate::types::{IrBlockKind, MathOp, SampleTime, SqrtOp, TrigOp};
 use sim_core::diag::{codes::*, Diagnostic, Location};
 use sim_core::expr::{parse_value_in, Matrix};
 use sim_core::library::{
@@ -178,6 +178,36 @@ pub fn lower_block_in(
         }
         "Abs" => (IrBlockKind::Abs, l.st()?),
         "Signum" => (IrBlockKind::Signum, l.st()?),
+        "Math" => {
+            let op = match l.text("Operator")? {
+                "exp" => MathOp::Exp,
+                "log" => MathOp::Log,
+                "10^u" => MathOp::TenToU,
+                "log10" => MathOp::Log10,
+                "magnitude^2" => MathOp::MagnitudeSquared,
+                "square" => MathOp::Square,
+                "sqrt" => MathOp::Sqrt,
+                "pow" => MathOp::Pow,
+                "conj" => MathOp::Conj,
+                "reciprocal" => MathOp::Reciprocal,
+                "hypot" => MathOp::Hypot,
+                "rem" => MathOp::Rem,
+                "mod" => MathOp::Mod,
+                "transpose" => MathOp::Transpose,
+                "hermitian" => MathOp::Hermitian,
+                other => return Err(l.eval_err("Operator", format!("unknown operator '{other}'"))),
+            };
+            (IrBlockKind::MathFn { op }, l.st()?)
+        }
+        "Sqrt" => {
+            let op = match l.text("Operator")? {
+                "sqrt" => SqrtOp::Sqrt,
+                "signedSqrt" => SqrtOp::SignedSqrt,
+                "rSqrt" => SqrtOp::RSqrt,
+                other => return Err(l.eval_err("Operator", format!("unknown operator '{other}'"))),
+            };
+            (IrBlockKind::Sqrt { op }, l.st()?)
+        }
         "Trigonometry" => {
             let op = match l.text("Operator")? {
                 "sin" => TrigOp::Sin,
