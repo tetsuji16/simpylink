@@ -79,6 +79,26 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             Err(d) => diags.push(d),
         }
     }
+    // Parameters that are read but not honoured (#167).
+    for fb in &flat {
+        if fb.block.block_type == "Trigonometry"
+            && fb
+                .block
+                .params
+                .get("ApproximationMethod")
+                .map(String::as_str)
+                == Some("CORDIC")
+        {
+            diags.push(Diagnostic::warning(
+                W_DATA_TYPE_IGNORED,
+                format!(
+                    "approximation method 'CORDIC' of '{}' is ignored; computing exactly",
+                    fb.block.name
+                ),
+                Location::block(&fb.path, fb.block.sid),
+            ));
+        }
+    }
     if has_errors(&diags) {
         return fail(diags);
     }

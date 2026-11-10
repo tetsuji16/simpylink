@@ -188,6 +188,14 @@ fn product_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
         outputs: 1,
     })
 }
+fn trig_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("sin");
+    Ok(PortCounts {
+        inputs: if op == "atan2" { 2 } else { 1 },
+        outputs: 1,
+    })
+}
+
 fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let n = match p.get("Inputs") {
         None => 2,
@@ -605,6 +613,55 @@ static REGISTRY: &[BlockSpec] = &[
         ports: ports_1_1,
         base_name: "Zero-Order Hold",
         description: "Sample the input at the sample time and hold it",
+    },
+    BlockSpec {
+        block_type: "Trigonometry",
+        display_name: "Trigonometric Function",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[
+            p(
+                "Operator",
+                "Function",
+                "sin",
+                ParamKind::Enum(&[
+                    "sin",
+                    "cos",
+                    "tan",
+                    "asin",
+                    "acos",
+                    "atan",
+                    "atan2",
+                    "sinh",
+                    "cosh",
+                    "tanh",
+                    "asinh",
+                    "acosh",
+                    "atanh",
+                    "sincos",
+                    "cos + jsin",
+                ]),
+            ),
+            p(
+                "ApproximationMethod",
+                "Approximation method",
+                "None",
+                ParamKind::Enum(&["None", "CORDIC"]),
+            ),
+        ],
+        ports: trig_ports,
+        base_name: "Trigonometric Function",
+        description: "Trigonometric and hyperbolic functions",
+    },
+    BlockSpec {
+        block_type: "Signum",
+        display_name: "Sign",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[],
+        ports: ports_1_1,
+        base_name: "Sign",
+        description: "Sign of the input (-1, 0 or 1)",
     },
     BlockSpec {
         block_type: "Mux",

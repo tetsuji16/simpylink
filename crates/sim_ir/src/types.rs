@@ -106,6 +106,12 @@ pub enum IrBlockKind {
         ops: Vec<char>,
     },
     Abs,
+    /// Trigonometric or hyperbolic function (#167).
+    Trig {
+        op: TrigOp,
+    },
+    /// Sign of the input (#167).
+    Signum,
     Bias {
         bias: f64,
     },
@@ -206,6 +212,45 @@ impl IrBlockKind {
             // passes its input through (DES-07 §5, #166).
             IrBlockKind::ZeroOrderHold => false,
             _ => self.num_disc_states() > 0,
+        }
+    }
+}
+
+/// Trigonometric function operators (#167).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrigOp {
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Sinh,
+    Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+}
+
+impl TrigOp {
+    /// Name of the `math` function (atan2 is handled separately).
+    pub fn py_name(&self) -> &'static str {
+        match self {
+            TrigOp::Sin => "sin",
+            TrigOp::Cos => "cos",
+            TrigOp::Tan => "tan",
+            TrigOp::Asin => "asin",
+            TrigOp::Acos => "acos",
+            TrigOp::Atan => "atan",
+            TrigOp::Atan2 => "atan2",
+            TrigOp::Sinh => "sinh",
+            TrigOp::Cosh => "cosh",
+            TrigOp::Tanh => "tanh",
+            TrigOp::Asinh => "asinh",
+            TrigOp::Acosh => "acosh",
+            TrigOp::Atanh => "atanh",
         }
     }
 }
