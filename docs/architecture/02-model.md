@@ -239,15 +239,25 @@ pub fn parse_value(src: &str) -> Result<Value, ExprError>;
 ```text
 value   := ws expr ws EOF
 expr    := term (('+' | '-') term)*
-term    := unary (('*' | '/') unary)*
+term    := unary (('*' | '/' | '.*' | './') unary)*
 unary   := ('-' | '+') unary | power
-power   := primary ('^' unary)?
-primary := NUMBER | 'pi' | 'inf' | 'Inf' | 'eps' | 'NaN' は禁止 | '(' expr ')' | matrix
+power   := primary (('^' | '.^') unary)?
+primary := primary_atom ('\'')*
+primary_atom := NUMBER | IDENT | func_call | 'pi' | 'inf' | 'Inf' | 'eps' | 'NaN' は禁止 | '(' expr ')' | matrix
+func_call := IDENT '(' (expr (',' expr)*)? ')'
 matrix  := '[' rows? ']'
 rows    := row (';' row)*
 row     := expr ((',' | WS_SEP) expr)*
 NUMBER  := [0-9]+ ('.' [0-9]*)? ([eE] [+-]? [0-9]+)? | '.' [0-9]+ ([eE] [+-]? [0-9]+)?
+IDENT   := [A-Za-z_][A-Za-z0-9_]* ('.' [A-Za-z_][A-Za-z0-9_]*)*
 ```
+- 識別子：`a.b.c` のようなドット区切りの構造体フィールド参照を1つの識別子として字句解析する。
+- 演算子：要素ごと演算子 `.*`、`./`、`.^` をサポート（スカラー同士は `*`、`/`、`^` と同じ挙動）。後置転置 `'` は行列の転置を行い、スカラー値はそのまま維持する。
+- 関数呼び出し：識別子の直後に `(` がある場合（ワークスペースに変数が存在しない場合）は関数呼び出しとして評価される。変数がワークスペースに存在する場合は `"indexing is not supported"` エラー。
+  - 1 引数（スカラーのみ）：`sin cos tan asin acos atan sinh cosh tanh exp log log10 log2 sqrt abs sign floor ceil round fix`
+  - 2 引数（スカラーのみ）：`atan2 mod rem min max hypot power`
+  - 引数が行列の場合は `"function 'NAME' expects scalar arguments"`、未知の関数は `"unknown function 'NAME'"`、引数個数不一致は `"function 'NAME' expects N argument(s)"`。
+- 変数依存の抽出：`pub fn identifiers(src: &str) -> Result<BTreeSet<String>, ExprError>` は関数名および組込み定数（`pi`, `inf`, `Inf`, `eps`）を除いた変数識別子の集合を返す。
 - 行列内の区切り規則：`[1 -2]` は 2 要素、`[1 - 2]` は 1 要素（-1）、`[1 -2+3]` は 2 要素（1, 1）。判定：行列内で空白の直後に `+`/`-` があり、その直後が空白でない場合、新しい要素の開始とみなす。
 - 行列の要素は Scalar でなければならない（入れ子行列はエラー）。各行の要素数が異なればエラー。
 - 行列同士・行列とスカラーの演算はエラー（`"matrix arithmetic is not supported"`）。
