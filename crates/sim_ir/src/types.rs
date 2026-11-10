@@ -112,6 +112,14 @@ pub enum IrBlockKind {
     },
     /// Sign of the input (#167).
     Signum,
+    /// Math Function operator (#168).
+    MathFn {
+        op: MathOp,
+    },
+    /// Sqrt block operator (#168).
+    Sqrt {
+        op: SqrtOp,
+    },
     Bias {
         bias: f64,
     },
@@ -253,6 +261,34 @@ impl TrigOp {
             TrigOp::Atanh => "atanh",
         }
     }
+}
+
+/// Math Function operators (#168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathOp {
+    Exp,
+    Log,
+    TenToU,
+    Log10,
+    MagnitudeSquared,
+    Square,
+    Sqrt,
+    Pow,
+    Conj,
+    Reciprocal,
+    Hypot,
+    Rem,
+    Mod,
+    Transpose,
+    Hermitian,
+}
+
+/// Sqrt block operators (#168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqrtOp {
+    Sqrt,
+    SignedSqrt,
+    RSqrt,
 }
 
 /// One logged channel.

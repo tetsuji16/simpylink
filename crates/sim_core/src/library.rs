@@ -188,6 +188,18 @@ fn product_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
         outputs: 1,
     })
 }
+fn math_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("exp");
+    Ok(PortCounts {
+        inputs: if matches!(op, "pow" | "hypot" | "rem" | "mod") {
+            2
+        } else {
+            1
+        },
+        outputs: 1,
+    })
+}
+
 fn trig_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let op = p.get("Operator").map(String::as_str).unwrap_or("sin");
     Ok(PortCounts {
@@ -662,6 +674,52 @@ static REGISTRY: &[BlockSpec] = &[
         ports: ports_1_1,
         base_name: "Sign",
         description: "Sign of the input (-1, 0 or 1)",
+    },
+    BlockSpec {
+        block_type: "Math",
+        display_name: "Math Function",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[p(
+            "Operator",
+            "Function",
+            "exp",
+            ParamKind::Enum(&[
+                "exp",
+                "log",
+                "10^u",
+                "log10",
+                "magnitude^2",
+                "square",
+                "sqrt",
+                "pow",
+                "conj",
+                "reciprocal",
+                "hypot",
+                "rem",
+                "mod",
+                "transpose",
+                "hermitian",
+            ]),
+        )],
+        ports: math_ports,
+        base_name: "Math Function",
+        description: "Mathematical functions",
+    },
+    BlockSpec {
+        block_type: "Sqrt",
+        display_name: "Sqrt",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[p(
+            "Operator",
+            "Function",
+            "sqrt",
+            ParamKind::Enum(&["sqrt", "signedSqrt", "rSqrt"]),
+        )],
+        ports: ports_1_1,
+        base_name: "Sqrt",
+        description: "Square root (also signed and reciprocal)",
     },
     BlockSpec {
         block_type: "Mux",
