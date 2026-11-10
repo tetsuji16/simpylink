@@ -3,7 +3,7 @@ use crate::emit::{py_float, py_matrix, py_str, py_vector, PyWriter};
 use crate::runtime::RUNTIME_FORMAT1;
 use crate::{CodegenError, CodegenOptions, GeneratedCode};
 use sim_ir::naming::script_file_name;
-use sim_ir::{IrBlock, IrBlockKind, MathOp, SignalId, SimIr, SqrtOp, TrigOp};
+use sim_ir::{IrBlock, IrBlockKind, LogicOp, MathOp, RelOp, SignalId, SimIr, SqrtOp, TrigOp};
 use std::collections::BTreeMap;
 
 type R<T> = Result<T, CodegenError>;
@@ -215,6 +215,39 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
              (({u} - {vb}_LOWER_VALUE) if {u} < {vb}_LOWER_VALUE else 0.0)",
             u = c.u(b, 0)
         ),
+        IrBlockKind::Relational { op } => match op.py_operator() {
+            Some(py) => {
+                let (u1, u2) = (c.u(b, 0), c.u(b, 1));
+                format!("1.0 if {u1} {py} {u2} else 0.0")
+            }
+            None => {
+                let u = c.u(b, 0);
+                let f = match op {
+                    RelOp::IsInf => "math.isinf",
+                    RelOp::IsNaN => "math.isnan",
+                    _ => "math.isfinite",
+                };
+                format!("1.0 if {f}({u}) else 0.0")
+            }
+        },
+        IrBlockKind::Logic { op, inputs } => {
+            let terms: Vec<String> = (0..*inputs as usize)
+                .map(|i| format!("({} != 0.0)", c.u(b, i)))
+                .collect();
+            let cond = match op {
+                LogicOp::And | LogicOp::Nand => terms.join(" and "),
+                LogicOp::Or | LogicOp::Nor => terms.join(" or "),
+                LogicOp::Xor => format!("(({}) % 2 == 1)", terms.join(" + ")),
+                LogicOp::Nxor => format!("(({}) % 2 == 0)", terms.join(" + ")),
+                LogicOp::Not => terms.first().cloned().unwrap_or_else(|| "False".into()),
+            };
+            let negated = matches!(op, LogicOp::Nand | LogicOp::Nor | LogicOp::Not);
+            if negated {
+                format!("0.0 if {cond} else 1.0")
+            } else {
+                format!("1.0 if {cond} else 0.0")
+            }
+        }
         IrBlockKind::Bias { .. } => format!("{} + {vb}_BIAS", c.u(b, 0)),
         IrBlockKind::Saturate { .. } => format!(
             "min(max({}, {vb}_LOWER_LIMIT), {vb}_UPPER_LIMIT)",
