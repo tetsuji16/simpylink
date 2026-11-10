@@ -632,6 +632,31 @@ fn reference_pid_controller_uses_instance_data() {
 }
 
 #[test]
+fn scoped_visibility_and_atomic_subsystem_are_imported() {
+    let root = br#"<System><Block BlockType="GotoTagVisibility" Name="Visibility" SID="1"><P Name="GotoTag">speed</P></Block><Block BlockType="SubSystem" Name="Atomic" SID="2"><P Name="TreatAsAtomicUnit">on</P><System/></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert!(imp.report.unsupported_blocks.is_empty());
+    assert_eq!(
+        imp.model.root.blocks[0]
+            .params
+            .get("GotoTag")
+            .map(String::as_str),
+        Some("speed")
+    );
+    assert_eq!(
+        imp.model.root.blocks[1]
+            .params
+            .get("TreatAsAtomicUnit")
+            .map(String::as_str),
+        Some("on")
+    );
+}
+
+#[test]
 fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
     let root = br#"<System>
 <Block BlockType="Constant" Name="C" SID="1"/><Block BlockType="UnknownOpaqueBlock" Name="T" SID="2"><PortCounts in="1"/></Block>

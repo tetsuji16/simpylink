@@ -13,6 +13,7 @@ pub fn is_virtual(b: &Block, path: &SystemPath) -> bool {
         || b.block_type == "SubSystem"
         || b.block_type == "Goto"
         || b.block_type == "From"
+        || b.block_type == "GotoTagVisibility"
         || (!path.is_root() && (b.block_type == "Inport" || b.block_type == "Outport"))
 }
 
@@ -73,8 +74,34 @@ impl<'a> Ctx<'a> {
                         .unwrap_or("local")
                         == "local"
             });
-            let target = local.map(|g| (path.clone(), g)).or_else(|| {
+            let scope_for = |p: &SystemPath| {
+                let mut p = p.clone();
+                loop {
+                    let system = self.model.system(&p)?;
+                    if system.blocks.iter().any(|g| {
+                        g.block_type == "GotoTagVisibility"
+                            && g.params.get("GotoTag").map(String::as_str).unwrap_or("A") == tag
+                    }) {
+                        return Some(p);
+                    }
+                    let sid = p.0.pop()?;
+                    let parent = self.model.system(&p)?;
+                    if parent
+                        .block(sid)?
+                        .params
+                        .get("TreatAsAtomicUnit")
+                        .is_some_and(|v| v == "on")
+                    {
+                        return None;
+                    }
+                }
+            };
+            let scoped_target = || {
+                let scope = scope_for(path)?;
                 self.locals.keys().find_map(|p| {
+                    if !p.0.starts_with(&scope.0) || scope_for(p).as_ref() != Some(&scope) {
+                        return None;
+                    }
                     let system = self.model.system(p)?;
                     system
                         .blocks
@@ -83,11 +110,30 @@ impl<'a> Ctx<'a> {
                             g.block_type == "Goto"
                                 && g.params.get("GotoTag").map(String::as_str).unwrap_or("A") == tag
                                 && g.params.get("TagVisibility").map(String::as_str)
-                                    == Some("global")
+                                    == Some("scoped")
                         })
                         .map(|g| (p.clone(), g))
                 })
-            })?;
+            };
+            let target = local
+                .map(|g| (path.clone(), g))
+                .or_else(scoped_target)
+                .or_else(|| {
+                    self.locals.keys().find_map(|p| {
+                        let system = self.model.system(p)?;
+                        system
+                            .blocks
+                            .iter()
+                            .find(|g| {
+                                g.block_type == "Goto"
+                                    && g.params.get("GotoTag").map(String::as_str).unwrap_or("A")
+                                        == tag
+                                    && g.params.get("TagVisibility").map(String::as_str)
+                                        == Some("global")
+                            })
+                            .map(|g| (p.clone(), g))
+                    })
+                })?;
             let d = self.locals.get(&target.0)?.get(&PortRef {
                 block: target.1.sid,
                 port: 1,
