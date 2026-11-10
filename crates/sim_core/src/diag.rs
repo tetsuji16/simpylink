@@ -122,6 +122,10 @@ pub mod codes {
     pub const E_SAMPLE_TIME: &str = "E_SAMPLE_TIME";
     pub const E_UNSUPPORTED_BLOCK: &str = "E_UNSUPPORTED_BLOCK";
     pub const E_UNSUPPORTED_FEATURE: &str = "E_UNSUPPORTED_FEATURE";
+    /// Duplicate local or global Goto tag.
+    pub const E_DUPLICATE_GOTO_TAG: &str = "E_DUPLICATE_GOTO_TAG";
+    /// A From block has no visible matching Goto.
+    pub const E_UNMATCHED_FROM: &str = "E_UNMATCHED_FROM";
     /// A model variable definition is invalid or cannot be evaluated (#94).
     pub const E_VARIABLE: &str = "E_VARIABLE";
     /// Signal widths do not match (vector signals, #92 / DES-07 §3).

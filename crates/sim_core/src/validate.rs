@@ -14,7 +14,73 @@ pub fn validate_model(model: &Model) -> Vec<Diagnostic> {
     check_sids(&model.root, &SystemPath::root(), &mut seen, &mut out);
     let mut seen_lines = BTreeSet::new();
     check_system(&model.root, &SystemPath::root(), &mut seen_lines, &mut out);
+    check_tags(model, &mut out);
     out
+}
+
+fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
+    fn collect<'a>(
+        sys: &'a System,
+        path: &SystemPath,
+        blocks: &mut Vec<(SystemPath, &'a crate::model::Block)>,
+    ) {
+        for b in &sys.blocks {
+            if b.block_type == "Goto" || b.block_type == "From" {
+                blocks.push((path.clone(), b));
+            }
+            if let Some(child) = &b.system {
+                collect(child, &path.child(b.sid), blocks);
+            }
+        }
+    }
+    let mut blocks = Vec::new();
+    collect(&model.root, &SystemPath::root(), &mut blocks);
+    let mut local = BTreeSet::new();
+    let mut global = BTreeSet::new();
+    for (path, b) in &blocks {
+        if b.block_type != "Goto" {
+            continue;
+        }
+        let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+        let visibility = b
+            .params
+            .get("TagVisibility")
+            .map(String::as_str)
+            .unwrap_or("local");
+        let duplicate = match visibility {
+            "local" => !local.insert((path.clone(), tag)),
+            "global" => !global.insert(tag),
+            "scoped" => {
+                out.push(Diagnostic::error(
+                    E_UNSUPPORTED_FEATURE,
+                    "scoped goto visibility is not supported",
+                    Location::block(path, b.sid),
+                ));
+                false
+            }
+            _ => false,
+        };
+        if duplicate {
+            out.push(Diagnostic::error(
+                E_DUPLICATE_GOTO_TAG,
+                format!("duplicate goto tag '{tag}'"),
+                Location::block(path, b.sid),
+            ));
+        }
+    }
+    for (path, b) in &blocks {
+        if b.block_type != "From" {
+            continue;
+        }
+        let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+        if !local.contains(&(path.clone(), tag)) && !global.contains(tag) {
+            out.push(Diagnostic::error(
+                E_UNMATCHED_FROM,
+                format!("no visible goto for tag '{tag}'"),
+                Location::block(path, b.sid),
+            ));
+        }
+    }
 }
 
 fn check_config(m: &Model, out: &mut Vec<Diagnostic>) {
@@ -135,6 +201,7 @@ fn check_system(
         };
         for ps in s.params {
             match b.params.get(ps.name) {
+                None if b.block_type == "Goto" && ps.name == "TagVisibility" => {}
                 None => out.push(Diagnostic::error(
                     E_INVALID_PARAM,
                     format!("parameter '{}' is missing", ps.name),

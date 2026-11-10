@@ -8,12 +8,16 @@ use std::collections::BTreeMap;
 /// How a parameter string is validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    Expr { shape: Shape },
+    Expr {
+        shape: Shape,
+    },
     SampleTime,
     SumSigns,
     ProductOps,
     Enum(&'static [&'static str]),
     PositiveInt,
+    /// An arbitrary text value.
+    Text,
 }
 
 /// Expected value shape.
@@ -61,13 +65,14 @@ pub struct BlockSpec {
 }
 
 /// Library headings in display order.
-pub const LIBRARIES: [&str; 6] = [
+pub const LIBRARIES: [&str; 7] = [
     "Sources",
     "Sinks",
     "Math Operations",
     "Continuous",
     "Discrete",
     "Ports & Subsystems",
+    "Signal Routing",
 ];
 
 const fn p(
@@ -531,6 +536,34 @@ static REGISTRY: &[BlockSpec] = &[
         base_name: "Terminator",
         description: "Terminate an unused signal",
     },
+    BlockSpec {
+        block_type: "Goto",
+        display_name: "Goto",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[
+            p("GotoTag", "Tag", "A", ParamKind::Text),
+            p(
+                "TagVisibility",
+                "Tag visibility",
+                "local",
+                ParamKind::Enum(&["local", "scoped", "global"]),
+            ),
+        ],
+        ports: ports_1_0,
+        base_name: "Goto",
+        description: "Route a signal using a tag",
+    },
+    BlockSpec {
+        block_type: "From",
+        display_name: "From",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[p("GotoTag", "Goto tag", "A", ParamKind::Text)],
+        ports: ports_0_1,
+        base_name: "From",
+        description: "Receive a signal using a tag",
+    },
 ];
 
 /// All block specs.
@@ -583,6 +616,7 @@ pub fn port_counts(block: &Block) -> Result<PortCounts, String> {
 /// Validates a parameter string.
 pub fn validate_param(kind: ParamKind, value: &str) -> Result<(), String> {
     match kind {
+        ParamKind::Text => Ok(()),
         ParamKind::Expr { shape } => {
             let v = parse_value(value).map_err(|e| e.to_string())?;
             match shape {

@@ -1,0 +1,261 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "goto_from",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 0.001,
+    "abs_tol": 1e-06,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 11,
+  "next_line_id": 7,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Step",
+        "name": "Step",
+        "position": [
+          50.0,
+          50.0,
+          80.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "After": "2",
+          "Before": "0",
+          "SampleTime": "0",
+          "Time": "1"
+        }
+      },
+      {
+        "sid": 2,
+        "block_type": "Gain",
+        "name": "Gain",
+        "position": [
+          130.0,
+          50.0,
+          160.0,
+          80.0
+        ],
+        "orientation": "right",
+        "params": {
+          "Gain": "3",
+          "SampleTime": "-1"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [
+          210.0,
+          49.0,
+          240.0,
+          81.0
+        ],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "2"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Goto",
+        "name": "GotoLocal",
+        "position": [
+          0,
+          0,
+          40,
+          20
+        ],
+        "orientation": "right",
+        "params": {
+          "GotoTag": "u",
+          "TagVisibility": "local"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "From",
+        "name": "FromLocal",
+        "position": [
+          0,
+          0,
+          40,
+          20
+        ],
+        "orientation": "right",
+        "params": {
+          "GotoTag": "u"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [
+          0,
+          0,
+          40,
+          20
+        ],
+        "orientation": "right",
+        "params": {
+          "SampleTime": "inf",
+          "Value": "5"
+        }
+      },
+      {
+        "sid": 7,
+        "block_type": "SubSystem",
+        "name": "Subsystem",
+        "position": [
+          0,
+          0,
+          40,
+          20
+        ],
+        "orientation": "right",
+        "params": {},
+        "system": {
+          "blocks": [
+            {
+              "sid": 8,
+              "block_type": "From",
+              "name": "FromGlobal",
+              "position": [
+                0,
+                0,
+                40,
+                20
+              ],
+              "orientation": "right",
+              "params": {
+                "GotoTag": "g"
+              }
+            },
+            {
+              "sid": 9,
+              "block_type": "Outport",
+              "name": "Out1",
+              "position": [
+                0,
+                0,
+                40,
+                20
+              ],
+              "orientation": "right",
+              "params": {
+                "Port": "1"
+              }
+            }
+          ],
+          "lines": [
+            {
+              "id": 6,
+              "src": {
+                "block": 8,
+                "port": 1
+              },
+              "points": [],
+              "dst": {
+                "block": 9,
+                "port": 1
+              },
+              "branches": []
+            }
+          ]
+        }
+      },
+      {
+        "sid": 10,
+        "block_type": "Goto",
+        "name": "GotoGlobal",
+        "position": [
+          0,
+          0,
+          40,
+          20
+        ],
+        "orientation": "right",
+        "params": {
+          "GotoTag": "g",
+          "TagVisibility": "global"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": {
+          "block": 1,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 4,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": {
+          "block": 5,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 2,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": {
+          "block": 2,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 4,
+        "src": {
+          "block": 6,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 10,
+          "port": 1
+        },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": {
+          "block": 7,
+          "port": 1
+        },
+        "points": [],
+        "dst": {
+          "block": 3,
+          "port": 2
+        },
+        "branches": []
+      }
+    ]
+  }
+}
