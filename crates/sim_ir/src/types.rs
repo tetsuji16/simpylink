@@ -143,6 +143,8 @@ pub enum IrBlockKind {
     UnitDelay {
         x0: f64,
     },
+    /// Sample the input at the sample time and hold it (#166).
+    ZeroOrderHold,
     DiscreteIntegrator {
         gain: f64,
         x0: f64,
@@ -191,13 +193,20 @@ impl IrBlockKind {
     /// Number of discrete states.
     pub fn num_disc_states(&self) -> usize {
         match self {
-            IrBlockKind::UnitDelay { .. } | IrBlockKind::DiscreteIntegrator { .. } => 1,
+            IrBlockKind::UnitDelay { .. }
+            | IrBlockKind::DiscreteIntegrator { .. }
+            | IrBlockKind::ZeroOrderHold => 1,
             _ => 0,
         }
     }
     /// True if the block requires a discrete sample time.
     pub fn needs_discrete(&self) -> bool {
-        self.num_disc_states() > 0
+        match self {
+            // A Zero-Order Hold that inherits a continuous or constant sample time
+            // passes its input through (DES-07 §5, #166).
+            IrBlockKind::ZeroOrderHold => false,
+            _ => self.num_disc_states() > 0,
+        }
     }
 }
 

@@ -597,6 +597,16 @@ static REGISTRY: &[BlockSpec] = &[
         description: "Terminate an unused signal",
     },
     BlockSpec {
+        block_type: "ZeroOrderHold",
+        display_name: "Zero-Order Hold",
+        library: "Discrete",
+        default_size: (35.0, 34.0),
+        params: &[p("SampleTime", "Sample time (-1 for inherited)", "-1", ST)],
+        ports: ports_1_1,
+        base_name: "Zero-Order Hold",
+        description: "Sample the input at the sample time and hold it",
+    },
+    BlockSpec {
         block_type: "Mux",
         display_name: "Mux",
         library: "Signal Routing",

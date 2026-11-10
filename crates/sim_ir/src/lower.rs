@@ -154,6 +154,7 @@ pub fn lower_block_in(
             };
             (kind, l.st()?)
         }
+        "ZeroOrderHold" => (IrBlockKind::ZeroOrderHold, l.st()?),
         "Mux" => (IrBlockKind::Mux { widths: vec![] }, None),
         "Demux" => {
             let raw = l.raw("Outputs")?;

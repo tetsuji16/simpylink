@@ -224,7 +224,15 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
     let (mut co, mut dof) = (0usize, 0usize);
     for sid in &nodes {
         let k = &lowered[sid].0.kind;
-        let (nc, nd) = (k.num_cont_states(), k.num_disc_states());
+        let nc = k.num_cont_states();
+        // A Zero-Order Hold only keeps a state when its resolved rate is discrete.
+        let nd = if matches!(k, IrBlockKind::ZeroOrderHold)
+            && !matches!(resolved[sid], SampleTime::Discrete { .. })
+        {
+            0
+        } else {
+            k.num_disc_states()
+        };
         if nc > 0 {
             cont.insert(*sid, co..co + nc);
             co += nc;
@@ -340,7 +348,7 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             sample_time: st,
             cont_state: cont.get(sid).cloned(),
             disc_state: disc.get(sid).cloned(),
-            rate_index: if l.kind.needs_discrete() {
+            rate_index: if disc.contains_key(sid) {
                 rate_index(&rates, st)
             } else {
                 None

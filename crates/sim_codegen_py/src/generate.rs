@@ -87,6 +87,12 @@ fn params(w: &mut PyWriter, b: &IrBlock) -> R<()> {
             items.push(("D", py_float(*d)?));
             items.push(("N", py_float(*n)?));
         }
+        IrBlockKind::ZeroOrderHold => {
+            if let sim_ir::SampleTime::Discrete { period, offset } = b.sample_time {
+                items.push(("PERIOD", py_float(period)?));
+                items.push(("OFFSET", py_float(offset)?));
+            }
+        }
         IrBlockKind::SineWave {
             amplitude,
             bias,
@@ -192,6 +198,13 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
             format!("{vb}_AMPLITUDE * math.sin({vb}_FREQUENCY * t + {vb}_PHASE) + {vb}_BIAS")
         }
         IrBlockKind::Clock => "t".into(),
+        IrBlockKind::ZeroOrderHold => match b.sample_time {
+            sim_ir::SampleTime::Discrete { .. } => format!(
+                "{} if _sample_hit(t, {vb}_PERIOD, {vb}_OFFSET) else d[{d0}]",
+                c.u(b, 0)
+            ),
+            _ => c.u(b, 0),
+        },
         IrBlockKind::Scope | IrBlockKind::Terminator | IrBlockKind::Outport { .. } => {
             return Ok(None)
         }
@@ -299,6 +312,7 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
             IrBlockKind::UnitDelay { .. } | IrBlockKind::DiscreteIntegrator { .. } => {
                 d0.push(format!("{vb}_INITIAL_CONDITION"))
             }
+            IrBlockKind::ZeroOrderHold if b.disc_state.is_some() => d0.push("0.0".to_string()),
             _ => {}
         }
     }
@@ -329,6 +343,20 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
     }
     w.blank();
     w.blank();
+    if ir
+        .blocks
+        .iter()
+        .any(|b| matches!(b.kind, IrBlockKind::ZeroOrderHold))
+    {
+        w.line("def _sample_hit(t, period, offset):");
+        w.indent();
+        w.line("\"\"\"True if t is a sample hit of the rate (period, offset).\"\"\"");
+        w.line("k = round((t - offset) / period)");
+        w.line("return k >= 0 and abs(t - (offset + k * period)) <= _time_tolerance()");
+        w.dedent();
+        w.blank();
+        w.blank();
+    }
     // compute_outputs
     w.line("def compute_outputs(t, x, d, t_seg):");
     w.indent();
@@ -408,6 +436,7 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
             IrBlockKind::UnitDelay { .. } => {
                 w.line(&format!("d_next[{}] = {}", r.start, c.uy(b, 0)))
             }
+            IrBlockKind::ZeroOrderHold => w.line(&format!("d_next[{}] = {}", r.start, c.uy(b, 0))),
             IrBlockKind::DiscreteIntegrator { .. } => w.line(&format!(
                 "d_next[{0}] = d[{0}] + {vb}_GAIN_VALUE * {vb}_SAMPLE_TIME * {1}",
                 r.start,
