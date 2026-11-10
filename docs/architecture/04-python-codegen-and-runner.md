@@ -19,7 +19,7 @@
 |---|---|
 | ヘッダ | shebang、docstring（Model 名、Generator 版）、import |
 | `MODEL_NAME` | `MODEL_NAME = "<model_name>"`（JSON 文字列エスケープ） |
-| Simulation settings | START_TIME, STOP_TIME, OUTPUT_STEP, SOLVER, REL_TOL, ABS_TOL, MAX_STEP |
+| Simulation settings | START_TIME, STOP_TIME, OUTPUT_STEP, SOLVER, REL_TOL, ABS_TOL, MAX_STEP, FIXED_STEP（可変ステップは `None`、固定ステップは具体値） |
 | Block parameters | 実行順ではなく **sid 昇順** に `# <name> (SID n)` + 定数。パラメータの無いブロックは出力しない |
 | States, rates and logging | NUM_CONT_STATES, X0, NUM_DISC_STATES, D0, DISCRETE_RATES, BREAKPOINTS, LOG_CHANNELS |
 | `compute_outputs(t, x, d, t_seg)` | 実行順に `# <name> (SID n)` + 代入文。出力の無いブロック（Scope, Outport）は出力しない。最後に全信号の dict を返す（キーは実行順） |
@@ -65,6 +65,7 @@ SOLVER = "RK45"
 REL_TOL = 0.001
 ABS_TOL = 1e-6
 MAX_STEP = math.inf
+FIXED_STEP = None
 
 # ---------------------------------------------------------------------------
 # Block parameters
@@ -267,6 +268,8 @@ time,Scope/1
 ## 4. 固定ランタイム
 
 上記ファイルの `# Fixed runtime (identical in every generated file; generator format 1)` 見出し（直前の空行2行を含む）から末尾までが固定ランタイム。sim_codegen_py はこれを `include_str!("runtime_format1.py")` で埋め込み、**改変せず** 連結する。
+
+固定ステップ（DES-07 §2.3、#159）：`FIXED_STEP` が `None` でなければ `major_time_points()` が `START_TIME + k*FIXED_STEP` を `"step"` 種別で加え（`is_output` は立てない）、`simulate()` は `solve_ivp` の代わりに `fixed_step(fun, t, h, x, method)`（Butcher 表 `_TABLEAUS` による 1 段）で区間を進める。`SOLVER == "discrete"` は積分しない。可変ステップのモデルは `FIXED_STEP = None` の 1 行以外は従来と同一。
 
 ## 5. 結果ファイル（Python → Rust）
 
