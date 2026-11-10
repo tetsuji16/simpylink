@@ -65,12 +65,13 @@ pub struct BlockSpec {
 }
 
 /// Library headings in display order.
-pub const LIBRARIES: [&str; 7] = [
+pub const LIBRARIES: [&str; 8] = [
     "Sources",
     "Sinks",
     "Math Operations",
     "Continuous",
     "Discrete",
+    "Discontinuities",
     "Ports & Subsystems",
     "Signal Routing",
 ];
@@ -211,6 +212,24 @@ fn trig_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
 fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let n = match p.get("Inputs") {
         None => 2,
+        Some(s) => s
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "must be a positive integer".to_string())?,
+    };
+    if n == 0 {
+        return Err("must be a positive integer".into());
+    }
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// `Inputs` of MinMax; the default is 1, not 2 (#169).
+fn minmax_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = match p.get("Inputs") {
+        None => 1,
         Some(s) => s
             .trim()
             .parse::<u32>()
@@ -720,6 +739,42 @@ static REGISTRY: &[BlockSpec] = &[
         ports: ports_1_1,
         base_name: "Sqrt",
         description: "Square root (also signed and reciprocal)",
+    },
+    BlockSpec {
+        block_type: "MinMax",
+        display_name: "MinMax",
+        library: "Math Operations",
+        default_size: (30.0, 40.0),
+        params: &[
+            p(
+                "Function",
+                "Function",
+                "min",
+                ParamKind::Enum(&["min", "max"]),
+            ),
+            p(
+                "Inputs",
+                "Number of input ports",
+                "1",
+                ParamKind::PositiveInt,
+            ),
+        ],
+        ports: minmax_ports,
+        base_name: "MinMax",
+        description: "Minimum or maximum of the inputs",
+    },
+    BlockSpec {
+        block_type: "DeadZone",
+        display_name: "Dead Zone",
+        library: "Discontinuities",
+        default_size: (30.0, 30.0),
+        params: &[
+            p("LowerValue", "Start of dead zone", "-0.5", SCALAR),
+            p("UpperValue", "End of dead zone", "0.5", SCALAR),
+        ],
+        ports: ports_1_1,
+        base_name: "Dead Zone",
+        description: "Zero output inside the dead zone (no zero-crossing detection)",
     },
     BlockSpec {
         block_type: "Mux",

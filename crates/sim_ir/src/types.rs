@@ -120,6 +120,16 @@ pub enum IrBlockKind {
     Sqrt {
         op: SqrtOp,
     },
+    /// Minimum or maximum of `inputs` signals (#169).
+    MinMax {
+        is_max: bool,
+        inputs: u32,
+    },
+    /// Dead Zone with `lower` and `upper` bounds (#169).
+    DeadZone {
+        lower: f64,
+        upper: f64,
+    },
     Bias {
         bias: f64,
     },
