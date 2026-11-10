@@ -564,6 +564,16 @@ static REGISTRY: &[BlockSpec] = &[
         base_name: "From",
         description: "Receive a signal using a tag",
     },
+    BlockSpec {
+        block_type: "GotoTagVisibility",
+        display_name: "Goto Tag Visibility",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[p("GotoTag", "Goto tag", "A", ParamKind::Text)],
+        ports: ports_0_0,
+        base_name: "Goto Tag Visibility",
+        description: "Define the scope of a Goto tag",
+    },
 ];
 
 /// All block specs.

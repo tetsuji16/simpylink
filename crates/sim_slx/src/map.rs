@@ -547,6 +547,9 @@ impl Reader<'_> {
                 "{full}: PID Controller library block mapped to PIDController"
             ));
         } else if bt == "SubSystem" {
+            if let Some(value) = ps.get("TreatAsAtomicUnit") {
+                params.insert("TreatAsAtomicUnit".into(), value.clone());
+            }
             let inline = b.children_named("System").next();
             let child = match inline {
                 Some(s) if s.attr("Ref").is_none() => Some(self.system(s, &full)),

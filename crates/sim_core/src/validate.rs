@@ -25,7 +25,7 @@ fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
         blocks: &mut Vec<(SystemPath, &'a crate::model::Block)>,
     ) {
         for b in &sys.blocks {
-            if b.block_type == "Goto" || b.block_type == "From" {
+            if matches!(b.block_type.as_str(), "Goto" | "From" | "GotoTagVisibility") {
                 blocks.push((path.clone(), b));
             }
             if let Some(child) = &b.system {
@@ -37,6 +37,38 @@ fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
     collect(&model.root, &SystemPath::root(), &mut blocks);
     let mut local = BTreeSet::new();
     let mut global = BTreeSet::new();
+    let mut markers = BTreeSet::new();
+    for (path, b) in &blocks {
+        if b.block_type == "GotoTagVisibility" {
+            let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+            if !markers.insert((path.clone(), tag)) {
+                out.push(Diagnostic::error(
+                    E_DUPLICATE_GOTO_TAG,
+                    format!("duplicate goto tag visibility for '{tag}'"),
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+    }
+    let scope_for = |path: &SystemPath, tag: &str| {
+        let mut p = path.clone();
+        loop {
+            if markers.contains(&(p.clone(), tag)) {
+                return Some(p);
+            }
+            let sid = p.0.pop()?;
+            let parent = model.system(&p)?;
+            if parent
+                .block(sid)?
+                .params
+                .get("TreatAsAtomicUnit")
+                .is_some_and(|v| v == "on")
+            {
+                return None;
+            }
+        }
+    };
+    let mut scoped = BTreeSet::new();
     for (path, b) in &blocks {
         if b.block_type != "Goto" {
             continue;
@@ -50,14 +82,17 @@ fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
         let duplicate = match visibility {
             "local" => !local.insert((path.clone(), tag)),
             "global" => !global.insert(tag),
-            "scoped" => {
-                out.push(Diagnostic::error(
-                    E_UNSUPPORTED_FEATURE,
-                    "scoped goto visibility is not supported",
-                    Location::block(path, b.sid),
-                ));
-                false
-            }
+            "scoped" => match scope_for(path, tag) {
+                Some(scope) => !scoped.insert((scope, tag)),
+                None => {
+                    out.push(Diagnostic::error(
+                        E_INVALID_PARAM,
+                        format!("scoped goto tag '{tag}' has no visibility block"),
+                        Location::block(path, b.sid),
+                    ));
+                    false
+                }
+            },
             _ => false,
         };
         if duplicate {
@@ -73,7 +108,8 @@ fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
             continue;
         }
         let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
-        if !local.contains(&(path.clone(), tag)) && !global.contains(tag) {
+        let scoped_match = scope_for(path, tag).is_some_and(|scope| scoped.contains(&(scope, tag)));
+        if !local.contains(&(path.clone(), tag)) && !scoped_match && !global.contains(tag) {
             out.push(Diagnostic::error(
                 E_UNMATCHED_FROM,
                 format!("no visible goto for tag '{tag}'"),
