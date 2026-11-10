@@ -65,20 +65,6 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             Workspace::new()
         }
     };
-    // fixed-step solvers (#99): skeleton only, rejected until the runtime supports them
-    if model.config.solver.is_fixed_step() {
-        diags.push(Diagnostic::error(
-            E_UNSUPPORTED_FEATURE,
-            format!(
-                "solver '{}' is not implemented yet",
-                model.config.solver.label()
-            ),
-            Location::default(),
-        ));
-    }
-    if has_errors(&diags) {
-        return fail(diags);
-    }
     let flat = flat_blocks(model);
     // lower
     let mut lowered = BTreeMap::new();
@@ -172,6 +158,68 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             disc.insert(*sid, dof..dof + nd);
             dof += nd;
         }
+    }
+    // fixed-step solvers (#99): decide h and validate it against the rates
+    let mut fixed_step: Option<f64> = None;
+    if model.config.solver.is_fixed_step() {
+        let span = model.config.stop_time - model.config.start_time;
+        let h = match model.config.fixed_step {
+            Some(h) if h > 0.0 && h <= span => h,
+            Some(_) => {
+                diags.push(Diagnostic::error(
+                    E_INVALID_CONFIG,
+                    "fixed step must be positive and not larger than stop - start",
+                    Location::default(),
+                ));
+                return fail(diags);
+            }
+            // auto: the smallest discrete period, or 50 steps over the whole run
+            None => rates
+                .iter()
+                .map(|r| r.0)
+                .reduce(f64::min)
+                .unwrap_or(span / 50.0),
+        };
+        if model.config.solver == SolverKind::FixedDiscrete && co > 0 {
+            diags.push(Diagnostic::error(
+                E_INVALID_CONFIG,
+                "the discrete solver cannot integrate continuous states; choose ode1..ode5",
+                Location::default(),
+            ));
+        }
+        for (ts, off) in &rates {
+            let integral = |r: f64| (r - r.round()).abs() <= 1e-9 * r.abs().max(1.0);
+            if integral(ts / h) && integral(off / h) {
+                continue;
+            }
+            // every rate comes from a block, so an owner always exists
+            let Some(sid) = resolved
+                .iter()
+                .find(|(_, st)| {
+                    matches!(
+                        st,
+                        SampleTime::Discrete { period, offset }
+                            if (period - ts).abs() <= 1e-12 && (offset - off).abs() <= 1e-12
+                    )
+                })
+                .map(|(sid, _)| *sid)
+            else {
+                continue;
+            };
+            let fb = lowered[&sid].1;
+            diags.push(Diagnostic::error(
+                E_SAMPLE_TIME,
+                format!(
+                    "sample time [{}, {}] of '{}' is not a multiple of the fixed step {}",
+                    ts, off, fb.block.name, h
+                ),
+                Location::block(&fb.path, sid),
+            ));
+        }
+        if has_errors(&diags) {
+            return fail(diags);
+        }
+        fixed_step = Some(h);
     }
     // blocks in execution order
     let mut blocks = vec![];
@@ -285,7 +333,7 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             rel_tol: cfg.rel_tol,
             abs_tol: cfg.abs_tol,
             max_step: cfg.max_step,
-            fixed_step: cfg.fixed_step,
+            fixed_step,
         },
         blocks,
         signals,

@@ -253,6 +253,13 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
             Some(v) => py_float(v)?,
         }
     ));
+    w.line(&format!(
+        "FIXED_STEP = {}",
+        match cfg.fixed_step {
+            None => "None".to_string(),
+            Some(v) => py_float(v)?,
+        }
+    ));
     w.blank();
     w.line(&bar);
     w.line("# Block parameters");

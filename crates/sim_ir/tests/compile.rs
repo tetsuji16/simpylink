@@ -262,15 +262,76 @@ fn subsystem_flattening() {
 }
 
 #[test]
-fn skeleton_rejects_fixed_step_and_variables_clearly() {
-    let mut m = fx("step_gain_scope");
+fn fixed_step_size_is_decided_and_validated() {
+    use sim_core::diag::codes::{E_INVALID_CONFIG, E_SAMPLE_TIME};
+    // auto with no discrete rates: (stop - start) / 50
+    let mut m = fx("first_order_lag");
     m.config.solver = SolverKind::Ode4;
+    let ir = compile(&m).unwrap().ir;
+    assert_eq!(ir.config.fixed_step, Some(0.02));
+    assert_eq!(ir.config.solver_method, "ode4");
+    // explicit h is kept as is
+    m.config.fixed_step = Some(0.5);
+    assert_eq!(compile(&m).unwrap().ir.config.fixed_step, Some(0.5));
+    // auto from the smallest discrete period
+    let mut a = fx("accumulator");
+    a.config.solver = SolverKind::FixedDiscrete;
+    assert_eq!(compile(&a).unwrap().ir.config.fixed_step, Some(1.0));
+    // variable-step solvers keep None
+    assert_eq!(
+        compile(&fx("first_order_lag"))
+            .unwrap()
+            .ir
+            .config
+            .fixed_step,
+        None
+    );
+    // h must be positive and not larger than stop - start
+    for h in [0.0, -1.0, 2.0] {
+        let mut m = fx("first_order_lag");
+        m.config.solver = SolverKind::Ode4;
+        m.config.fixed_step = Some(h);
+        let e = compile(&m).unwrap_err();
+        assert!(
+            e.diagnostics.iter().any(|d| d.code == E_INVALID_CONFIG
+                && d.message
+                    .contains("fixed step must be positive and not larger than stop - start")),
+            "h = {h}: {:?}",
+            e.diagnostics
+        );
+    }
+    // every discrete rate must be a multiple of h
+    let mut a = fx("accumulator");
+    a.config.solver = SolverKind::Ode4;
+    a.config.fixed_step = Some(0.2);
+    a.root
+        .blocks
+        .iter_mut()
+        .find(|b| b.sid.0 == 3)
+        .unwrap()
+        .params
+        .insert("SampleTime".into(), "0.3".into());
+    let e = compile(&a).unwrap_err();
+    assert!(
+        e.diagnostics.iter().any(|d| d.code == E_SAMPLE_TIME
+            && d.message.contains("not a multiple of the fixed step 0.2")),
+        "{:?}",
+        e.diagnostics
+    );
+    // the discrete solver cannot integrate continuous states
+    let mut m = fx("first_order_lag");
+    m.config.solver = SolverKind::FixedDiscrete;
     let e = compile(&m).unwrap_err();
-    assert!(e
-        .diagnostics
-        .iter()
-        .any(|d| d.code == sim_core::diag::codes::E_UNSUPPORTED_FEATURE
-            && d.message.contains("ode4")));
+    assert!(
+        e.diagnostics.iter().any(|d| d.code == E_INVALID_CONFIG
+            && d.message.contains("cannot integrate continuous states")),
+        "{:?}",
+        e.diagnostics
+    );
+}
+
+#[test]
+fn skeleton_rejects_variables_clearly() {
     let mut m = fx("step_gain_scope");
     m.variables.insert("K".into(), "3".into());
     let e = compile(&m).unwrap_err();
