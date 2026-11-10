@@ -2,10 +2,11 @@
 use crate::realize::tf_to_ss;
 use crate::types::{IrBlockKind, SampleTime};
 use sim_core::diag::{codes::*, Diagnostic, Location};
-use sim_core::expr::{parse_value, Matrix};
+use sim_core::expr::{parse_value_in, Matrix};
 use sim_core::library::{parse_sample_time_value, product_ops, sum_signs, SampleTimeParam};
 use sim_core::model::Block;
 use sim_core::path::SystemPath;
+use sim_core::workspace::Workspace;
 
 /// Lowered block.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +31,7 @@ pub fn parse_sample_time(src: &str) -> Result<Option<SampleTime>, String> {
 struct L<'a> {
     b: &'a Block,
     loc: Location,
+    ws: &'a Workspace,
 }
 
 impl L<'_> {
@@ -60,17 +62,17 @@ impl L<'_> {
         Diagnostic::error(E_UNSUPPORTED_FEATURE, msg, self.loc.clone())
     }
     fn scalar(&self, name: &str) -> Result<f64, Diagnostic> {
-        let v = parse_value(self.raw(name)?).map_err(|e| self.eval_err(name, e))?;
+        let v = parse_value_in(self.raw(name)?, self.ws).map_err(|e| self.eval_err(name, e))?;
         v.as_scalar()
             .ok_or_else(|| self.eval_err(name, "expected a scalar"))
     }
     fn vector(&self, name: &str) -> Result<Vec<f64>, Diagnostic> {
-        let v = parse_value(self.raw(name)?).map_err(|e| self.eval_err(name, e))?;
+        let v = parse_value_in(self.raw(name)?, self.ws).map_err(|e| self.eval_err(name, e))?;
         v.as_vector()
             .ok_or_else(|| self.eval_err(name, "expected a vector"))
     }
     fn matrix(&self, name: &str) -> Result<Matrix, Diagnostic> {
-        let v = parse_value(self.raw(name)?).map_err(|e| self.eval_err(name, e))?;
+        let v = parse_value_in(self.raw(name)?, self.ws).map_err(|e| self.eval_err(name, e))?;
         Ok(v.as_matrix())
     }
     fn st(&self) -> Result<Option<SampleTime>, Diagnostic> {
@@ -88,11 +90,22 @@ fn dims(m: &Matrix) -> String {
     format!("{}x{}", m.rows, m.cols)
 }
 
-/// Lowers one non-virtual block.
+/// Lowers one non-virtual block (no model variables).
 pub fn lower_block(block: &Block, is_root: bool, path: &SystemPath) -> Result<Lowered, Diagnostic> {
+    lower_block_in(block, is_root, path, &Workspace::new())
+}
+
+/// Lowers one non-virtual block; parameter expressions may use model variables in `ws` (#94).
+pub fn lower_block_in(
+    block: &Block,
+    is_root: bool,
+    path: &SystemPath,
+    ws: &Workspace,
+) -> Result<Lowered, Diagnostic> {
     let l = L {
         b: block,
         loc: Location::block(path, block.sid),
+        ws,
     };
     let cont = Some(SampleTime::Continuous);
     let (kind, st) = match block.block_type.as_str() {
@@ -194,7 +207,7 @@ pub fn lower_block(block: &Block, is_root: bool, path: &SystemPath) -> Result<Lo
             if !(dm.rows == 1 && dm.cols == 1) {
                 return Err(l.domain(format!("D must be 1x1 (got {})", dims(&dm))));
             }
-            let x0v = parse_value(l.raw("InitialCondition")?)
+            let x0v = parse_value_in(l.raw("InitialCondition")?, l.ws)
                 .map_err(|e| l.eval_err("InitialCondition", e))?;
             let x0 = match (x0v.as_scalar(), x0v.as_vector()) {
                 (Some(s), _) => vec![s; n],

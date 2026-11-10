@@ -1242,12 +1242,7 @@ pub fn write_slx_bytes(
         m.push(p_el("StopTime", &fmt_num(c.stop_time)));
         m.push(p_el("RelTol", &format!("{}", c.rel_tol)));
         m.push(p_el("AbsTol", &format!("{}", c.abs_tol)));
-        let solver = match c.solver {
-            SolverKind::Auto => "VariableStepAuto",
-            SolverKind::Ode45 => "ode45",
-            SolverKind::Ode23 => "ode23",
-            SolverKind::Ode15s => "ode15s",
-        };
+        let solver = c.solver.simulink_name();
         m.push(p_el("Solver", solver));
         m.push(root_sys);
         info.push(m);

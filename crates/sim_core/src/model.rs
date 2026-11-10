@@ -7,8 +7,11 @@ use std::collections::BTreeMap;
 
 /// Format marker written to every model file.
 pub const MODEL_FORMAT: &str = "simpylink-model";
-/// Current model format version.
+/// Oldest model format version written; files that use no v2 feature are still written as v1.
 pub const MODEL_FORMAT_VERSION: u32 = 1;
+/// Newest model format version this build reads and writes (adds `variables`,
+/// fixed-step solvers and `SimConfig::fixed_step`, see #94/#99).
+pub const MODEL_FORMAT_VERSION_MAX: u32 = 2;
 
 /// A complete model.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +23,9 @@ pub struct Model {
     pub next_sid: u32,
     pub next_line_id: u32,
     pub root: System,
+    /// Model variables: name → expression (format v2, #94). Empty in v1 files.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub variables: BTreeMap<String, String>,
 }
 
 /// Simulation settings.
@@ -32,6 +38,9 @@ pub struct SimConfig {
     pub abs_tol: f64,
     pub max_step: Option<f64>,
     pub output_step: f64,
+    /// Fixed step size for fixed-step solvers; `None` = auto (#99). Format v2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_step: Option<f64>,
 }
 
 impl Default for SimConfig {
@@ -44,11 +53,13 @@ impl Default for SimConfig {
             abs_tol: 1e-6,
             max_step: None,
             output_step: 0.01,
+            fixed_step: None,
         }
     }
 }
 
-/// Variable-step solver selection (mapped to SciPy methods).
+/// Solver selection. Variable-step solvers map to SciPy methods; fixed-step solvers
+/// (format v2, #99) are integrated by the generated runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SolverKind {
@@ -56,15 +67,33 @@ pub enum SolverKind {
     Ode45,
     Ode23,
     Ode15s,
+    /// Fixed-step, no continuous states allowed (Simulink "discrete (no continuous states)").
+    FixedDiscrete,
+    /// Fixed-step Euler.
+    Ode1,
+    /// Fixed-step Heun.
+    Ode2,
+    /// Fixed-step Bogacki-Shampine.
+    Ode3,
+    /// Fixed-step classic Runge-Kutta.
+    Ode4,
+    /// Fixed-step Dormand-Prince.
+    Ode5,
 }
 
 impl SolverKind {
     /// All solvers in UI order.
-    pub const ALL: [SolverKind; 4] = [
+    pub const ALL: [SolverKind; 10] = [
         SolverKind::Auto,
         SolverKind::Ode45,
         SolverKind::Ode23,
         SolverKind::Ode15s,
+        SolverKind::FixedDiscrete,
+        SolverKind::Ode1,
+        SolverKind::Ode2,
+        SolverKind::Ode3,
+        SolverKind::Ode4,
+        SolverKind::Ode5,
     ];
     /// Display label.
     pub fn label(&self) -> &'static str {
@@ -73,7 +102,35 @@ impl SolverKind {
             SolverKind::Ode45 => "ode45 (RK45)",
             SolverKind::Ode23 => "ode23 (RK23)",
             SolverKind::Ode15s => "ode15s (BDF)",
+            SolverKind::FixedDiscrete => "discrete (fixed-step, no continuous states)",
+            SolverKind::Ode1 => "ode1 (Euler, fixed-step)",
+            SolverKind::Ode2 => "ode2 (Heun, fixed-step)",
+            SolverKind::Ode3 => "ode3 (Bogacki-Shampine, fixed-step)",
+            SolverKind::Ode4 => "ode4 (Runge-Kutta, fixed-step)",
+            SolverKind::Ode5 => "ode5 (Dormand-Prince, fixed-step)",
         }
+    }
+    /// Simulink `SolverName` value for this solver.
+    pub fn simulink_name(&self) -> &'static str {
+        match self {
+            SolverKind::Auto => "VariableStepAuto",
+            SolverKind::Ode45 => "ode45",
+            SolverKind::Ode23 => "ode23",
+            SolverKind::Ode15s => "ode15s",
+            SolverKind::FixedDiscrete => "FixedStepDiscrete",
+            SolverKind::Ode1 => "ode1",
+            SolverKind::Ode2 => "ode2",
+            SolverKind::Ode3 => "ode3",
+            SolverKind::Ode4 => "ode4",
+            SolverKind::Ode5 => "ode5",
+        }
+    }
+    /// True for fixed-step solvers.
+    pub fn is_fixed_step(&self) -> bool {
+        !matches!(
+            self,
+            SolverKind::Auto | SolverKind::Ode45 | SolverKind::Ode23 | SolverKind::Ode15s
+        )
     }
 }
 
@@ -176,6 +233,17 @@ pub struct Branch {
 }
 
 impl Model {
+    /// Lowest format version that can represent this model (1 unless a v2 feature is used).
+    pub fn required_format_version(&self) -> u32 {
+        if !self.variables.is_empty()
+            || self.config.solver.is_fixed_step()
+            || self.config.fixed_step.is_some()
+        {
+            2
+        } else {
+            MODEL_FORMAT_VERSION
+        }
+    }
     /// Empty model with default configuration.
     pub fn new(name: &str) -> Model {
         Model {
@@ -186,6 +254,7 @@ impl Model {
             next_sid: 1,
             next_line_id: 1,
             root: System::default(),
+            variables: BTreeMap::new(),
         }
     }
     /// Allocates a new SID.

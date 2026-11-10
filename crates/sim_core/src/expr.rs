@@ -1,4 +1,5 @@
 //! Numeric parameter expressions (subset of MATLAB literal syntax).
+use crate::workspace::Workspace;
 
 /// Row-major matrix.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,14 +183,15 @@ fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
     Ok(out)
 }
 
-struct Parser {
+struct Parser<'w> {
     toks: Vec<Token>,
+    ws: &'w Workspace,
     i: usize,
     bracket_depth: usize,
     paren_depth: usize,
 }
 
-impl Parser {
+impl Parser<'_> {
     fn peek(&self) -> &Token {
         &self.toks[self.i]
     }
@@ -285,6 +287,10 @@ impl Parser {
         let t = self.next();
         match t.tok {
             Tok::Num(v) => Ok(Value::Scalar(v)),
+            Tok::Ident(ref s) if self.ws.get(s).is_some() => match self.ws.get(s) {
+                Some(v) => Ok(v.clone()),
+                None => err(format!("unknown identifier '{s}'"), t.pos),
+            },
             Tok::Ident(ref s) => match s.as_str() {
                 "pi" => Ok(Value::Scalar(std::f64::consts::PI)),
                 "inf" | "Inf" => Ok(Value::Scalar(f64::INFINITY)),
@@ -381,14 +387,20 @@ fn has_nan(v: &Value) -> bool {
     }
 }
 
-/// Evaluates a parameter expression.
+/// Evaluates a parameter expression (no variables).
 pub fn parse_value(src: &str) -> Result<Value, ExprError> {
+    parse_value_in(src, &Workspace::new())
+}
+
+/// Evaluates a parameter expression; identifiers are looked up in `ws` first (#94).
+pub fn parse_value_in(src: &str, ws: &Workspace) -> Result<Value, ExprError> {
     let toks = lex(src)?;
     if toks.len() == 1 {
         return err("empty expression", 0);
     }
     let mut p = Parser {
         toks,
+        ws,
         i: 0,
         bracket_depth: 0,
         paren_depth: 0,
@@ -406,6 +418,19 @@ pub fn parse_value(src: &str) -> Result<Value, ExprError> {
 #[cfg(test)]
 #[allow(clippy::approx_constant)] // expected values are written out on purpose
 mod tests {
+    #[test]
+    fn workspace_lookup() {
+        let mut ws = crate::workspace::Workspace::new();
+        ws.insert("Kp", Value::Scalar(2.0));
+        assert_eq!(parse_value_in("Kp*3", &ws), Ok(Value::Scalar(6.0)));
+        assert!(parse_value("Kp").is_err());
+        // variables shadow built-in constants only if defined (pi is reserved, so never).
+        assert_eq!(
+            parse_value_in("pi", &ws),
+            Ok(Value::Scalar(std::f64::consts::PI))
+        );
+    }
+
     use super::*;
     fn m(rows: usize, cols: usize, d: &[f64]) -> Value {
         Value::Matrix(Matrix {

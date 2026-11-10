@@ -170,6 +170,7 @@ pub fn allocate_signals(
                 id,
                 source: src,
                 var_name: signal_var_name(&vb, port, c.outputs),
+                width: 1,
             });
             map.insert(src, id);
         }

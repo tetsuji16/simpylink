@@ -122,4 +122,12 @@ pub mod codes {
     pub const E_SAMPLE_TIME: &str = "E_SAMPLE_TIME";
     pub const E_UNSUPPORTED_BLOCK: &str = "E_UNSUPPORTED_BLOCK";
     pub const E_UNSUPPORTED_FEATURE: &str = "E_UNSUPPORTED_FEATURE";
+    /// A model variable definition is invalid or cannot be evaluated (#94).
+    pub const E_VARIABLE: &str = "E_VARIABLE";
+    /// Signal widths do not match (vector signals, #92 / DES-07 §3).
+    pub const E_DIMENSION: &str = "E_DIMENSION";
+    /// A data-type parameter was ignored; simpylink computes in double (DES-07 §5).
+    pub const W_DATA_TYPE_IGNORED: &str = "W_DATA_TYPE_IGNORED";
+    /// An atomic subsystem was flattened like a virtual one (DES-07 §6).
+    pub const W_ATOMIC_AS_VIRTUAL: &str = "W_ATOMIC_AS_VIRTUAL";
 }

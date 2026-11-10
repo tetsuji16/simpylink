@@ -1,6 +1,6 @@
 //! Model → SimIr compiler.
 use crate::graph::{allocate_signals, build_connectivity, flat_blocks};
-use crate::lower::lower_block;
+use crate::lower::lower_block_in;
 use crate::naming::{log_name, var_base};
 use crate::sample_time::{discrete_rates, rate_index, resolve_sample_times, StInput};
 use crate::sort::{df_edges, loop_message, sorted_order};
@@ -9,6 +9,7 @@ use sim_core::diag::{codes::*, has_errors, Diagnostic, Location, Severity};
 use sim_core::ids::BlockId;
 use sim_core::model::{Model, PortRef, SolverKind};
 use sim_core::validate::validate_model;
+use sim_core::workspace::Workspace;
 use std::collections::BTreeMap;
 
 /// Successful compilation.
@@ -30,6 +31,13 @@ pub fn solver_method(kind: SolverKind) -> &'static str {
         SolverKind::Auto | SolverKind::Ode45 => "RK45",
         SolverKind::Ode23 => "RK23",
         SolverKind::Ode15s => "BDF",
+        // Fixed-step methods are implemented by the generated runtime (#99).
+        SolverKind::FixedDiscrete => "discrete",
+        SolverKind::Ode1 => "ode1",
+        SolverKind::Ode2 => "ode2",
+        SolverKind::Ode3 => "ode3",
+        SolverKind::Ode4 => "ode4",
+        SolverKind::Ode5 => "ode5",
     }
 }
 
@@ -43,13 +51,41 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
     if has_errors(&diags) {
         return fail(diags);
     }
+    // model variables (#94)
+    let ws = match Workspace::from_definitions(&model.variables) {
+        Ok(ws) => ws,
+        Err(errs) => {
+            for e in errs {
+                diags.push(Diagnostic::error(
+                    E_VARIABLE,
+                    e.to_string(),
+                    Location::default(),
+                ));
+            }
+            Workspace::new()
+        }
+    };
+    // fixed-step solvers (#99): skeleton only, rejected until the runtime supports them
+    if model.config.solver.is_fixed_step() {
+        diags.push(Diagnostic::error(
+            E_UNSUPPORTED_FEATURE,
+            format!(
+                "solver '{}' is not implemented yet",
+                model.config.solver.label()
+            ),
+            Location::default(),
+        ));
+    }
+    if has_errors(&diags) {
+        return fail(diags);
+    }
     let flat = flat_blocks(model);
     // lower
     let mut lowered = BTreeMap::new();
     let mut names = BTreeMap::new();
     for fb in &flat {
         names.insert(fb.block.sid, fb.block.name.clone());
-        match lower_block(fb.block, fb.path.is_root(), &fb.path) {
+        match lower_block_in(fb.block, fb.path.is_root(), &fb.path, &ws) {
             Ok(l) => {
                 lowered.insert(fb.block.sid, (l, fb));
             }
@@ -249,6 +285,7 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             rel_tol: cfg.rel_tol,
             abs_tol: cfg.abs_tol,
             max_step: cfg.max_step,
+            fixed_step: cfg.fixed_step,
         },
         blocks,
         signals,

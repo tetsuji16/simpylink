@@ -70,6 +70,7 @@ fn step_gain_scope_ir_exact() {
                 rel_tol: 1e-3,
                 abs_tol: 1e-6,
                 max_step: None,
+                fixed_step: None,
             },
             blocks: vec![
                 IrBlock {
@@ -124,6 +125,7 @@ fn step_gain_scope_ir_exact() {
                         port: 1,
                     },
                     var_name: "step_1".into(),
+                    width: 1,
                 },
                 IrSignal {
                     id: SignalId(1),
@@ -132,6 +134,7 @@ fn step_gain_scope_ir_exact() {
                         port: 1,
                     },
                     var_name: "gain_2".into(),
+                    width: 1,
                 },
             ],
             num_cont_states: 0,
@@ -256,4 +259,23 @@ fn subsystem_flattening() {
     );
     assert_eq!(ir.blocks[1].inputs, vec![Some(SignalId(0))]);
     assert_eq!(ir.blocks[2].inputs, vec![Some(SignalId(1))]);
+}
+
+#[test]
+fn skeleton_rejects_fixed_step_and_variables_clearly() {
+    let mut m = fx("step_gain_scope");
+    m.config.solver = SolverKind::Ode4;
+    let e = compile(&m).unwrap_err();
+    assert!(e
+        .diagnostics
+        .iter()
+        .any(|d| d.code == sim_core::diag::codes::E_UNSUPPORTED_FEATURE
+            && d.message.contains("ode4")));
+    let mut m = fx("step_gain_scope");
+    m.variables.insert("K".into(), "3".into());
+    let e = compile(&m).unwrap_err();
+    assert!(e
+        .diagnostics
+        .iter()
+        .any(|d| d.code == sim_core::diag::codes::E_VARIABLE));
 }

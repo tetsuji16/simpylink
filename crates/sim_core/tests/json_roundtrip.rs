@@ -243,3 +243,23 @@ fn save_and_load_file() {
     assert_eq!(m.root.blocks[0].position, Rect::new(50.0, 50.0, 80.0, 80.0));
     assert_eq!(m.root.lines[0].points, Vec::<Point>::new());
 }
+
+#[test]
+fn format_version_follows_features() {
+    let mut m = Model::new("v");
+    assert!(to_json_string(&m).contains("\"format_version\": 1"));
+    assert!(!to_json_string(&m).contains("variables"));
+    m.variables.insert("Kp".into(), "2".into());
+    let s = to_json_string(&m);
+    assert!(s.contains("\"format_version\": 2"));
+    let back = from_json_str(&s).unwrap();
+    assert_eq!(back.variables, m.variables);
+    let mut f = Model::new("f");
+    f.config.solver = sim_core::model::SolverKind::Ode4;
+    f.config.fixed_step = Some(0.01);
+    let s = to_json_string(&f);
+    assert!(s.contains("\"format_version\": 2"));
+    assert!(s.contains("\"solver\": \"ode4\""));
+    assert_eq!(from_json_str(&s).unwrap().config, f.config);
+    assert!(from_json_str(&s.replace("\"format_version\": 2", "\"format_version\": 3")).is_err());
+}

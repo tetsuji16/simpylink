@@ -83,6 +83,8 @@ tol = 1e-9 * max(1, |start|, |stop|)
 | ode15s | "BDF" | 可変次数 BDF（NDF ではない） |
 `max_step=None` → `math.inf`。連続状態が 0 個なら `solve_ivp` を呼ばない。
 
+> 追記：固定ステップソルバー（FixedDiscrete, ode1〜ode5）は DES-07 §2（`docs/architecture/07-m6-design.md`）。ベクトル信号は §3、ゼロクロッシングは §4。
+
 ## 5. 実行順（Sorted Order）
 
 - 有向グラフ G：駆動元ブロック A → 被駆動ブロック B の辺を、**B のその入力ポートが DF のときだけ** 張る。

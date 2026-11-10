@@ -159,6 +159,8 @@ impl Line {
 
 ## 3. JSON 形式 v1（確定、`sim_core::json`）
 
+> 追記（DES-07 §1・§2）：`variables`・固定ステップソルバー・`config.fixed_step` を使うモデルは `format_version: 2` で書く。読込は v1 と v2。使わないモデルは v1 のまま。
+
 - serde_json の **pretty 出力（インデント2）** + 末尾改行 `\n`。キー順は構造体宣言順、`params` は BTreeMap 順。
 - 読み込み時の検査：`format != "simpylink-model"` → `ModelIoError::WrongFormat`、`format_version != 1` → `ModelIoError::UnsupportedVersion(v)`。
 - 読み込み後の補正：`next_sid <= max_sid()` の場合 `next_sid = max_sid()+1`（`next_line_id` 同様）。`blocks`/`lines` を sid/id 昇順にソート。
