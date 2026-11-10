@@ -3,7 +3,9 @@ use crate::realize::tf_to_ss;
 use crate::types::{IrBlockKind, SampleTime};
 use sim_core::diag::{codes::*, Diagnostic, Location};
 use sim_core::expr::{parse_value_in, Matrix};
-use sim_core::library::{parse_sample_time_value, product_ops, sum_signs, SampleTimeParam};
+use sim_core::library::{
+    demux_widths, parse_sample_time_value, product_ops, sum_signs, SampleTimeParam,
+};
 use sim_core::model::Block;
 use sim_core::path::SystemPath;
 use sim_core::workspace::Workspace;
@@ -75,6 +77,19 @@ impl L<'_> {
         let v = parse_value_in(self.raw(name)?, self.ws).map_err(|e| self.eval_err(name, e))?;
         Ok(v.as_matrix())
     }
+    /// Elements of a scalar-or-vector parameter; matrices are rejected (#161).
+    fn elements(&self, name: &str) -> Result<Vec<f64>, Diagnostic> {
+        let v = parse_value_in(self.raw(name)?, self.ws).map_err(|e| self.eval_err(name, e))?;
+        let m = v.as_matrix();
+        if m.rows > 1 && m.cols > 1 {
+            return Err(self.unsupported("matrix signals are not supported"));
+        }
+        let items = v.as_vector().unwrap_or_default();
+        if items.is_empty() {
+            return Err(self.eval_err(name, "expected a scalar or vector"));
+        }
+        Ok(items)
+    }
     fn st(&self) -> Result<Option<SampleTime>, Diagnostic> {
         match self.b.params.get("SampleTime") {
             None => Ok(None),
@@ -109,12 +124,15 @@ pub fn lower_block_in(
     };
     let cont = Some(SampleTime::Continuous);
     let (kind, st) = match block.block_type.as_str() {
-        "Constant" => (
-            IrBlockKind::Constant {
-                value: l.scalar("Value")?,
-            },
-            l.st()?,
-        ),
+        "Constant" => {
+            let v = l.elements("Value")?;
+            let kind = if v.len() == 1 {
+                IrBlockKind::Constant { value: v[0] }
+            } else {
+                IrBlockKind::ConstantVector { values: v }
+            };
+            (kind, l.st()?)
+        }
         "Ground" => (
             IrBlockKind::Constant { value: 0.0 },
             Some(SampleTime::Constant),
@@ -127,12 +145,28 @@ pub fn lower_block_in(
             },
             l.st()?,
         ),
-        "Gain" => (
-            IrBlockKind::Gain {
-                gain: l.scalar("Gain")?,
-            },
-            l.st()?,
-        ),
+        "Gain" => {
+            let g = l.elements("Gain")?;
+            let kind = if g.len() == 1 {
+                IrBlockKind::Gain { gain: g[0] }
+            } else {
+                IrBlockKind::GainVector { gains: g }
+            };
+            (kind, l.st()?)
+        }
+        "Mux" => (IrBlockKind::Mux { widths: vec![] }, None),
+        "Demux" => {
+            let raw = l.raw("Outputs")?;
+            let v = parse_value_in(raw, l.ws).map_err(|e| l.eval_err("Outputs", e))?;
+            let specified = demux_widths(raw).map_err(|e| l.eval_err("Outputs", e))?;
+            // A scalar `Outputs` only gives the port count; the widths follow from the input.
+            let widths = if v.as_scalar().is_some() {
+                vec![]
+            } else {
+                specified
+            };
+            (IrBlockKind::Demux { widths }, None)
+        }
         "Sum" => {
             let signs = sum_signs(l.raw("Inputs")?).map_err(|e| l.eval_err("Inputs", e))?;
             (IrBlockKind::Sum { signs }, l.st()?)
@@ -494,11 +528,11 @@ mod tests {
         assert!(err.message.contains("unknown identifier 'K'"));
         assert_eq!(err.location.block, Some(BlockId(1)));
 
-        // Non-scalar matrix in Gain
-        let b = block(2, "Gain", "Gain", &[("Gain", "[1 2]")]);
+        // Matrix gain (vector gains are supported since #161)
+        let b = block(2, "Gain", "Gain", &[("Gain", "[1 2; 3 4]")]);
         let err = lower_block(&b, true, &root).unwrap_err();
-        assert_eq!(err.code, E_PARAM_EVAL);
-        assert!(err.message.contains("expected a scalar"));
+        assert_eq!(err.code, E_UNSUPPORTED_FEATURE);
+        assert!(err.message.contains("matrix signals are not supported"));
 
         // Missing param in Gain
         let b = block(3, "Gain", "Gain", &[]);

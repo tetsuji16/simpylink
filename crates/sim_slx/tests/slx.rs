@@ -159,7 +159,7 @@ fn split_system_layout_and_unsupported() {
 <System>
   <Block BlockType="Constant" Name="Constant" SID="1"><P Name="Position">[20, 20, 50, 50]</P><P Name="Value">2</P></Block>
   <Block BlockType="Gain" Name="Gain" SID="2"><P Name="Position">[100, 20, 130, 50]</P><P Name="Gain">3</P></Block>
-  <Block BlockType="Mux" Name="Mux" SID="3"><P Name="Position">[180, 20, 185, 60]</P></Block>
+  <Block BlockType="Mystery" Name="Mystery" SID="3"><P Name="Position">[180, 20, 185, 60]</P></Block>
   <Block BlockType="Scope" Name="Scope" SID="4"><P Name="Position">[240, 20, 270, 52]</P></Block>
   <Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line>
   <Line><P Name="Src">2#out:1</P><Branch><P Name="Dst">4#in:1</P></Branch><Branch><P Name="Dst">3#in:1</P></Branch></Line>
@@ -177,7 +177,7 @@ fn split_system_layout_and_unsupported() {
     assert_eq!(imp.model.config.solver, sim_core::model::SolverKind::Ode23);
     assert_eq!(
         imp.report.unsupported_blocks,
-        vec![("synthetic/Mux".to_string(), "Mux".to_string())]
+        vec![("synthetic/Mystery".to_string(), "Mystery".to_string())]
     );
     assert_eq!(imp.model.root.blocks[1].params["Gain"], "3");
     assert_eq!(imp.model.root.blocks[1].params["SampleTime"], "-1");
@@ -676,7 +676,7 @@ fn scoped_visibility_and_atomic_subsystem_are_imported() {
 fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
     let root = br#"<System>
 <Block BlockType="Constant" Name="C" SID="1"/><Block BlockType="UnknownOpaqueBlock" Name="T" SID="2"><PortCounts in="1"/></Block>
-<Block BlockType="Constant" Name="C1" SID="3"/><Block BlockType="Demux" Name="D" SID="4"><PortCounts in="1" out="2"/></Block><Block BlockType="Scope" Name="S" SID="5"><P Name="NumInputPorts">2</P></Block>
+<Block BlockType="Constant" Name="C1" SID="3"/><Block BlockType="MysteryRouting" Name="D" SID="4"><PortCounts in="1" out="2"/></Block><Block BlockType="Scope" Name="S" SID="5"><P Name="NumInputPorts">2</P></Block>
 <Block BlockType="SimscapeBlock" Name="P1" SID="6"/><Block BlockType="SimscapeBlock" Name="P2" SID="7"/>
 <Line><P Name="Src">1#out:1</P><P Name="Dst">2#in:1</P></Line><Line><P Name="Src">3#out:1</P><P Name="Dst">4#in:1</P></Line>
 <Line><P Name="Src">4#out:1</P><P Name="Dst">5#in:1</P></Line><Line><P Name="Src">4#out:2</P><P Name="Dst">5#in:2</P></Line>
