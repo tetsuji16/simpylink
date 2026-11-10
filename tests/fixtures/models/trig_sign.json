@@ -1,0 +1,183 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "trig_sign",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 1.0,
+    "solver": "auto",
+    "rel_tol": 1e-6,
+    "abs_tol": 1e-9,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 10,
+  "next_line_id": 11,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Clock",
+        "name": "Clock",
+        "position": [20.0, 100.0, 50.0, 130.0],
+        "orientation": "right",
+        "params": {}
+      },
+      {
+        "sid": 2,
+        "block_type": "Trigonometry",
+        "name": "Trigonometric Function",
+        "position": [100.0, 30.0, 130.0, 60.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "sin",
+          "ApproximationMethod": "None"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [300.0, 100.0, 330.0, 160.0],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "4"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [20.0, 180.0, 50.0, 210.0],
+        "orientation": "right",
+        "params": {
+          "Value": "1",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Constant",
+        "name": "Constant1",
+        "position": [20.0, 230.0, 50.0, 260.0],
+        "orientation": "right",
+        "params": {
+          "Value": "2",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "Trigonometry",
+        "name": "Trigonometric Function1",
+        "position": [100.0, 190.0, 130.0, 220.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "atan2",
+          "ApproximationMethod": "None"
+        }
+      },
+      {
+        "sid": 7,
+        "block_type": "Bias",
+        "name": "Bias",
+        "position": [100.0, 300.0, 130.0, 330.0],
+        "orientation": "right",
+        "params": {
+          "Bias": "-0.5"
+        }
+      },
+      {
+        "sid": 8,
+        "block_type": "Signum",
+        "name": "Sign",
+        "position": [180.0, 300.0, 210.0, 330.0],
+        "orientation": "right",
+        "params": {}
+      },
+      {
+        "sid": 9,
+        "block_type": "Trigonometry",
+        "name": "Trigonometric Function2",
+        "position": [100.0, 380.0, 130.0, 410.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "tanh",
+          "ApproximationMethod": "None"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 2, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": { "block": 2, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": { "block": 4, "port": 1 },
+        "points": [],
+        "dst": { "block": 6, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 4,
+        "src": { "block": 5, "port": 1 },
+        "points": [],
+        "dst": { "block": 6, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": { "block": 6, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 6,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 7, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 7,
+        "src": { "block": 7, "port": 1 },
+        "points": [],
+        "dst": { "block": 8, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 8,
+        "src": { "block": 8, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 3 },
+        "branches": []
+      },
+      {
+        "id": 9,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 9, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 10,
+        "src": { "block": 9, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 4 },
+        "branches": []
+      }
+    ]
+  }
+}

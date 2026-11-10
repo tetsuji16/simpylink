@@ -1,6 +1,6 @@
 //! Block lowering: parameter evaluation into IrBlockKind.
 use crate::realize::tf_to_ss;
-use crate::types::{IrBlockKind, SampleTime};
+use crate::types::{IrBlockKind, SampleTime, TrigOp};
 use sim_core::diag::{codes::*, Diagnostic, Location};
 use sim_core::expr::{parse_value_in, Matrix};
 use sim_core::library::{
@@ -177,6 +177,31 @@ pub fn lower_block_in(
             (IrBlockKind::Product { ops }, l.st()?)
         }
         "Abs" => (IrBlockKind::Abs, l.st()?),
+        "Signum" => (IrBlockKind::Signum, l.st()?),
+        "Trigonometry" => {
+            let op = match l.text("Operator")? {
+                "sin" => TrigOp::Sin,
+                "cos" => TrigOp::Cos,
+                "tan" => TrigOp::Tan,
+                "asin" => TrigOp::Asin,
+                "acos" => TrigOp::Acos,
+                "atan" => TrigOp::Atan,
+                "atan2" => TrigOp::Atan2,
+                "sinh" => TrigOp::Sinh,
+                "cosh" => TrigOp::Cosh,
+                "tanh" => TrigOp::Tanh,
+                "asinh" => TrigOp::Asinh,
+                "acosh" => TrigOp::Acosh,
+                "atanh" => TrigOp::Atanh,
+                other => {
+                    return Err(l.unsupported(format!(
+                        "Trigonometric Function '{}': operator '{other}' is not supported",
+                        block.name
+                    )))
+                }
+            };
+            (IrBlockKind::Trig { op }, l.st()?)
+        }
         "Bias" => (
             IrBlockKind::Bias {
                 bias: l.scalar("Bias")?,

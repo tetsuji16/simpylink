@@ -3,7 +3,7 @@ use crate::emit::{py_float, py_matrix, py_str, py_vector, PyWriter};
 use crate::runtime::RUNTIME_FORMAT1;
 use crate::{CodegenError, CodegenOptions, GeneratedCode};
 use sim_ir::naming::script_file_name;
-use sim_ir::{IrBlock, IrBlockKind, SignalId, SimIr};
+use sim_ir::{IrBlock, IrBlockKind, SignalId, SimIr, TrigOp};
 use std::collections::BTreeMap;
 
 type R<T> = Result<T, CodegenError>;
@@ -161,6 +161,14 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
             s
         }
         IrBlockKind::Abs => format!("abs({})", c.u(b, 0)),
+        IrBlockKind::Trig { op } => match op {
+            TrigOp::Atan2 => format!("math.atan2({}, {})", c.u(b, 0), c.u(b, 1)),
+            other => format!("math.{}({})", other.py_name(), c.u(b, 0)),
+        },
+        IrBlockKind::Signum => {
+            let u = c.u(b, 0);
+            format!("float(({u} > 0) - ({u} < 0))")
+        }
         IrBlockKind::Bias { .. } => format!("{} + {vb}_BIAS", c.u(b, 0)),
         IrBlockKind::Saturate { .. } => format!(
             "min(max({}, {vb}_LOWER_LIMIT), {vb}_UPPER_LIMIT)",
