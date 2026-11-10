@@ -190,4 +190,12 @@ impl SimSession {
             handle.stop();
         }
     }
+    /// Stops a running simulation and forgets it: no `SimUpdate::Done` follows.
+    ///
+    /// Used when the document is replaced (New / Open) or the window closes, so that
+    /// results of the old model never reach the new one.
+    pub fn abandon(&mut self) {
+        self.stop();
+        self.phase = SimPhase::Idle;
+    }
 }

@@ -1,7 +1,8 @@
 //! Child process execution.
 use crate::python::no_window;
 use crate::types::*;
-use std::io::{BufRead, BufReader};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,6 +16,54 @@ pub struct RunHandle {
     rx: Receiver<RunEvent>,
     finished: bool,
     stop_requested: Arc<AtomicBool>,
+}
+
+/// Most lines of stdout (and, separately, of stderr) kept for `RunOutcome`.
+///
+/// A runaway script can print without end; only the newest lines are kept so memory
+/// stays bounded. The newest lines are the ones that explain a failure.
+pub const MAX_RETAINED_LINES: usize = 10_000;
+
+/// The newest `MAX_RETAINED_LINES` lines of one output stream.
+#[derive(Default)]
+struct RetainedLines {
+    lines: VecDeque<String>,
+}
+
+impl RetainedLines {
+    fn push(&mut self, line: String) {
+        if self.lines.len() == MAX_RETAINED_LINES {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(line);
+    }
+    fn into_vec(self) -> Vec<String> {
+        self.lines.into()
+    }
+}
+
+/// Reads `reader` to its end and calls `on_line` for every line (without `\n` / `\r\n`).
+///
+/// Bytes that are not valid UTF-8 are replaced by U+FFFD instead of ending the read:
+/// if the reader stopped early the pipe would fill up and the child would block forever.
+fn drain_lines(reader: impl Read, mut on_line: impl FnMut(String)) {
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            // End of stream, or the pipe is broken: nothing more can arrive.
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        on_line(String::from_utf8_lossy(&buf).into_owned());
+    }
 }
 
 fn status_from(code: Option<i32>, stderr: &[String], stopped: bool, timed_out: bool) -> RunStatus {
@@ -82,25 +131,25 @@ impl RunHandle {
         let stderr = child.stderr.take();
         let txo = tx.clone();
         let out_thread = std::thread::spawn(move || {
-            let mut all = vec![];
+            let mut all = RetainedLines::default();
             if let Some(s) = stdout {
-                for line in BufReader::new(s).lines().map_while(Result::ok) {
+                drain_lines(s, |line| {
                     let _sent = txo.send(RunEvent::Stdout(line.clone()));
                     all.push(line);
-                }
+                });
             }
-            all
+            all.into_vec()
         });
         let txe = tx.clone();
         let err_thread = std::thread::spawn(move || {
-            let mut all = vec![];
+            let mut all = RetainedLines::default();
             if let Some(s) = stderr {
-                for line in BufReader::new(s).lines().map_while(Result::ok) {
+                drain_lines(s, |line| {
                     let _sent = txe.send(RunEvent::Stderr(line.clone()));
                     all.push(line);
-                }
+                });
             }
-            all
+            all.into_vec()
         });
         let child = Arc::new(Mutex::new(Some(child)));
         let stop = Arc::new(AtomicBool::new(false));
@@ -202,5 +251,42 @@ pub fn run_blocking(
                 ))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines_of(bytes: &[u8]) -> Vec<String> {
+        let mut v = vec![];
+        drain_lines(bytes, |l| v.push(l));
+        v
+    }
+
+    #[test]
+    fn drain_lines_splits_and_trims_line_ends() {
+        assert_eq!(lines_of(b"a\nb\r\n\nlast"), ["a", "b", "", "last"]);
+        assert_eq!(lines_of(b""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn drain_lines_keeps_reading_after_invalid_utf8() {
+        assert_eq!(
+            lines_of(b"ok\n\xff\xfe bad\nafter\n"),
+            ["ok", "\u{fffd}\u{fffd} bad", "after"]
+        );
+    }
+
+    #[test]
+    fn retained_lines_keep_the_newest() {
+        let mut r = RetainedLines::default();
+        for i in 0..MAX_RETAINED_LINES + 5 {
+            r.push(i.to_string());
+        }
+        let v = r.into_vec();
+        assert_eq!(v.len(), MAX_RETAINED_LINES);
+        assert_eq!(v[0], "5");
+        assert_eq!(v[v.len() - 1], (MAX_RETAINED_LINES + 4).to_string());
     }
 }

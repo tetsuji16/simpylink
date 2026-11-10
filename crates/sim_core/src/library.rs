@@ -209,17 +209,30 @@ fn trig_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     })
 }
 
-fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
-    let n = match p.get("Inputs") {
-        None => 2,
-        Some(s) => s
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "must be a positive integer".to_string())?,
-    };
+/// Largest number of ports a variable-port block (Mux, Demux, MinMax, Scope) may have.
+///
+/// Validation, drawing and code generation loop over every port, so an unbounded
+/// count (`Inputs = 4000000000`) would hang the application.
+pub const MAX_PORTS: u32 = 256;
+
+/// Parses a port-count parameter: an integer in `1..=MAX_PORTS`, or `default` when absent.
+fn port_count(raw: Option<&String>, default: u32) -> Result<u32, String> {
+    let Some(s) = raw else { return Ok(default) };
+    let n = s
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "must be a positive integer".to_string())?;
     if n == 0 {
         return Err("must be a positive integer".into());
     }
+    if n > MAX_PORTS {
+        return Err(format!("must be at most {MAX_PORTS}"));
+    }
+    Ok(n)
+}
+
+fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = port_count(p.get("Inputs"), 2)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 1,
@@ -228,16 +241,7 @@ fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
 
 /// `Inputs` of MinMax; the default is 1, not 2 (#169).
 fn minmax_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
-    let n = match p.get("Inputs") {
-        None => 1,
-        Some(s) => s
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "must be a positive integer".to_string())?,
-    };
-    if n == 0 {
-        return Err("must be a positive integer".into());
-    }
+    let n = port_count(p.get("Inputs"), 1)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 1,
@@ -279,25 +283,20 @@ fn demux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     // A scalar `Outputs` is the number of equal outputs; a vector lists each width.
     let outputs = match parse_value(raw) {
         Ok(v) => match v.as_scalar() {
-            Some(n) => n as u32,
-            None => widths.len() as u32,
+            Some(n) => n,
+            None => widths.len() as f64,
         },
         Err(_) => return Err("Outputs must be a positive integer or a vector".into()),
     };
+    if outputs > f64::from(MAX_PORTS) {
+        return Err(format!("Outputs must be at most {MAX_PORTS}"));
+    }
+    let outputs = outputs as u32;
     Ok(PortCounts { inputs: 1, outputs })
 }
 
 fn scope_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
-    let n = match p.get("NumInputPorts") {
-        None => 1,
-        Some(s) => s
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "must be a positive integer".to_string())?,
-    };
-    if n == 0 {
-        return Err("must be a positive integer".into());
-    }
+    let n = port_count(p.get("NumInputPorts"), 1)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 0,
@@ -1095,6 +1094,32 @@ mod tests {
             pc(blk("Nope", &[])),
             Err("unknown block type 'Nope'".into())
         );
+    }
+
+    #[test]
+    fn port_counts_are_limited() {
+        let pc = |b: Block| port_counts(&b).map(|p| (p.inputs, p.outputs));
+        assert_eq!(pc(blk("Mux", &[("Inputs", "256")])), Ok((256, 1)));
+        for (ty, key) in [
+            ("Mux", "Inputs"),
+            ("MinMax", "Inputs"),
+            ("Scope", "NumInputPorts"),
+        ] {
+            for raw in ["257", "4000000000"] {
+                assert_eq!(
+                    pc(blk(ty, &[(key, raw)])),
+                    Err("must be at most 256".into()),
+                    "{ty} {key}={raw}"
+                );
+            }
+        }
+        assert_eq!(pc(blk("Demux", &[("Outputs", "256")])), Ok((1, 256)));
+        for raw in ["257", "1e9"] {
+            assert_eq!(
+                pc(blk("Demux", &[("Outputs", raw)])),
+                Err("Outputs must be at most 256".into())
+            );
+        }
     }
 
     #[test]
