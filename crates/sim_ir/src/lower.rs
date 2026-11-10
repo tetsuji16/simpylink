@@ -208,6 +208,29 @@ pub fn lower_block_in(
             };
             (IrBlockKind::Sqrt { op }, l.st()?)
         }
+        "MinMax" => {
+            let is_max = match l.text("Function")? {
+                "min" => false,
+                "max" => true,
+                other => return Err(l.eval_err("Function", format!("unknown function '{other}'"))),
+            };
+            let inputs = l
+                .raw("Inputs")?
+                .trim()
+                .parse::<u32>()
+                .map_err(|e| l.eval_err("Inputs", e))?;
+            if inputs == 0 {
+                return Err(l.eval_err("Inputs", "must be a positive integer"));
+            }
+            (IrBlockKind::MinMax { is_max, inputs }, l.st()?)
+        }
+        "DeadZone" => {
+            let (lower, upper) = (l.scalar("LowerValue")?, l.scalar("UpperValue")?);
+            if lower > upper {
+                return Err(l.domain("lower value must not exceed upper value"));
+            }
+            (IrBlockKind::DeadZone { lower, upper }, l.st()?)
+        }
         "Trigonometry" => {
             let op = match l.text("Operator")? {
                 "sin" => TrigOp::Sin,

@@ -54,6 +54,10 @@ fn params(w: &mut PyWriter, b: &IrBlock) -> R<()> {
             items.push(("LOWER_LIMIT", py_float(*lower)?));
         }
         IrBlockKind::Switch { threshold, .. } => items.push(("THRESHOLD", py_float(*threshold)?)),
+        IrBlockKind::DeadZone { lower, upper } => {
+            items.push(("LOWER_VALUE", py_float(*lower)?));
+            items.push(("UPPER_VALUE", py_float(*upper)?));
+        }
         IrBlockKind::Integrator { x0 } => items.push(("INITIAL_CONDITION", py_float(*x0)?)),
         IrBlockKind::TransferFcn { a, b: bv, c, d } => {
             if a.rows > 0 {
@@ -196,6 +200,21 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
                 SqrtOp::RSqrt => format!("1.0 / math.sqrt({u})"),
             }
         }
+        IrBlockKind::MinMax { is_max, inputs } => {
+            let f = if *is_max { "max" } else { "min" };
+            if *inputs <= 1 {
+                // A single scalar input is its own minimum and maximum.
+                c.u(b, 0)
+            } else {
+                let args: Vec<String> = (0..*inputs as usize).map(|i| c.u(b, i)).collect();
+                format!("{f}({})", args.join(", "))
+            }
+        }
+        IrBlockKind::DeadZone { .. } => format!(
+            "({u} - {vb}_UPPER_VALUE) if {u} > {vb}_UPPER_VALUE else \
+             (({u} - {vb}_LOWER_VALUE) if {u} < {vb}_LOWER_VALUE else 0.0)",
+            u = c.u(b, 0)
+        ),
         IrBlockKind::Bias { .. } => format!("{} + {vb}_BIAS", c.u(b, 0)),
         IrBlockKind::Saturate { .. } => format!(
             "min(max({}, {vb}_LOWER_LIMIT), {vb}_UPPER_LIMIT)",
