@@ -654,6 +654,22 @@ fn scoped_visibility_and_atomic_subsystem_are_imported() {
             .map(String::as_str),
         Some("on")
     );
+    let output = write_slx_bytes(&imp.model, None).unwrap();
+    let roundtrip = read_slx_bytes(&output, "m").unwrap();
+    assert_eq!(
+        roundtrip.model.root.blocks[0]
+            .params
+            .get("GotoTag")
+            .map(String::as_str),
+        Some("speed")
+    );
+    assert_eq!(
+        roundtrip.model.root.blocks[1]
+            .params
+            .get("TreatAsAtomicUnit")
+            .map(String::as_str),
+        Some("on")
+    );
 }
 
 #[test]
