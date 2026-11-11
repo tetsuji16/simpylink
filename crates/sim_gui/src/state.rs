@@ -445,6 +445,8 @@ impl AppState {
     }
 
     fn reset_view_state(&mut self) {
+        // A run of the previous document must not deliver results to this one.
+        self.sim.abandon();
         let viewport = self.canvas.viewport;
         self.canvas = CanvasController::new();
         self.canvas.viewport = viewport;
@@ -463,8 +465,11 @@ impl AppState {
             .map(|e| e.eq_ignore_ascii_case("slx"))
             .unwrap_or(false);
         let (mut model, slx, report) = if is_slx {
-            let imp = sim_slx::read_slx(path)
-                .map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+            let imp = sim_slx::read_slx(path).map_err(|e| {
+                let msg = format!("Could not open {}: {e}", path.display());
+                self.status = msg.clone();
+                msg
+            })?;
             (imp.model, Some(imp.preserved), Some(imp.report.lines()))
         } else {
             let m = sim_core::json::load_from_path(path).map_err(|e| {
@@ -557,7 +562,10 @@ impl AppState {
             PendingAction::Open(p) => {
                 let _shown_in_status = self.open_path(&p);
             }
-            PendingAction::Quit => self.quit_confirmed = true,
+            PendingAction::Quit => {
+                self.sim.abandon();
+                self.quit_confirmed = true;
+            }
         }
     }
 

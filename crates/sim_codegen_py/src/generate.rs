@@ -1,5 +1,5 @@
 //! SimIr → Python source (DES-04 §2).
-use crate::emit::{py_float, py_matrix, py_str, py_vector, PyWriter};
+use crate::emit::{py_comment, py_float, py_matrix, py_str, py_vector, PyWriter};
 use crate::runtime::RUNTIME_FORMAT1;
 use crate::{CodegenError, CodegenOptions, GeneratedCode};
 use sim_ir::naming::script_file_name;
@@ -113,7 +113,7 @@ fn params(w: &mut PyWriter, b: &IrBlock) -> R<()> {
     if items.is_empty() {
         return Ok(());
     }
-    w.line(&format!("# {} (SID {})", b.name, b.sid.0));
+    w.line(&format!("# {} (SID {})", py_comment(&b.name), b.sid.0));
     for (k, v) in items {
         w.line(&format!("{vb}_{k} = {v}"));
     }
@@ -424,7 +424,7 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
             continue;
         };
         let var = c.names[out];
-        w.line(&format!("# {} (SID {})", b.name, b.sid.0));
+        w.line(&format!("# {} (SID {})", py_comment(&b.name), b.sid.0));
         w.line(&format!("{var} = {expr}"));
         assigned.push(var);
     }
@@ -449,7 +449,7 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
     for b in &sorted {
         let vb = b.var_base.to_uppercase();
         let Some(r) = &b.cont_state else { continue };
-        w.line(&format!("# {} (SID {})", b.name, b.sid.0));
+        w.line(&format!("# {} (SID {})", py_comment(&b.name), b.sid.0));
         match &b.kind {
             IrBlockKind::Integrator { .. } => w.line(&format!("dx[{}] = {}", r.start, c.uy(b, 0))),
             IrBlockKind::TransferFcn { .. } | IrBlockKind::StateSpace { .. } => w.line(&format!(
@@ -485,7 +485,11 @@ pub fn generate(ir: &SimIr, opts: &CodegenOptions) -> Result<GeneratedCode, Code
         };
         w.line(&format!("if {rate} in hits:"));
         w.indent();
-        w.line(&format!("# {} (SID {}), rate {rate}", b.name, b.sid.0));
+        w.line(&format!(
+            "# {} (SID {}), rate {rate}",
+            py_comment(&b.name),
+            b.sid.0
+        ));
         match &b.kind {
             IrBlockKind::UnitDelay { .. } => {
                 w.line(&format!("d_next[{}] = {}", r.start, c.uy(b, 0)))

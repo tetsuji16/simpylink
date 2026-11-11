@@ -64,10 +64,48 @@ impl OpcPackage {
     }
 }
 
-/// Reads a package from bytes.
+/// Size limits applied while reading a package (protection against ZIP bombs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpcLimits {
+    /// Largest number of entries in the archive.
+    pub max_parts: usize,
+    /// Largest uncompressed size of one part, in bytes.
+    pub max_part_bytes: u64,
+    /// Largest uncompressed size of all parts together, in bytes.
+    pub max_total_bytes: u64,
+}
+
+impl Default for OpcLimits {
+    /// 10 000 parts, 256 MiB per part, 1 GiB in total.
+    fn default() -> Self {
+        OpcLimits {
+            max_parts: 10_000,
+            max_part_bytes: 256 * 1024 * 1024,
+            max_total_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+/// Reads a package from bytes with the default [`OpcLimits`].
 pub fn read_package(bytes: &[u8]) -> Result<OpcPackage, SlxError> {
+    read_package_with_limits(bytes, &OpcLimits::default())
+}
+
+/// Reads a package from bytes; fails with [`SlxError::Package`] when a limit is exceeded.
+///
+/// The limits are checked against the bytes actually decompressed, not against the
+/// sizes declared in the ZIP headers (which an attacker controls).
+pub fn read_package_with_limits(bytes: &[u8], limits: &OpcLimits) -> Result<OpcPackage, SlxError> {
     let mut ar =
         zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| SlxError::Package(e.to_string()))?;
+    if ar.len() > limits.max_parts {
+        return Err(SlxError::Package(format!(
+            "too many parts ({}, limit {})",
+            ar.len(),
+            limits.max_parts
+        )));
+    }
+    let mut total: u64 = 0;
     let mut pkg = OpcPackage::default();
     for i in 0..ar.len() {
         let mut f = ar
@@ -78,7 +116,23 @@ pub fn read_package(bytes: &[u8]) -> Result<OpcPackage, SlxError> {
             continue;
         }
         let mut data = vec![];
-        f.read_to_end(&mut data)?;
+        // Read one byte more than allowed so that "exactly at the limit" still passes.
+        let read = (&mut f)
+            .take(limits.max_part_bytes.saturating_add(1))
+            .read_to_end(&mut data)? as u64;
+        if read > limits.max_part_bytes {
+            return Err(SlxError::Package(format!(
+                "part '{name}' is larger than {} bytes",
+                limits.max_part_bytes
+            )));
+        }
+        total = total.saturating_add(read);
+        if total > limits.max_total_bytes {
+            return Err(SlxError::Package(format!(
+                "package is larger than {} bytes when unpacked",
+                limits.max_total_bytes
+            )));
+        }
         pkg.parts.push(OpcPart { name, data });
     }
     if pkg.part("[Content_Types].xml").is_none() {
@@ -122,4 +176,56 @@ pub fn write_package_file(pkg: &OpcPackage, path: &Path) -> Result<(), SlxError>
     }
     std::fs::write(path, write_package(pkg)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(parts: &[(&str, usize)]) -> Vec<u8> {
+        let mut pkg = OpcPackage::default();
+        pkg.set_part("[Content_Types].xml", b"<Types/>".to_vec());
+        for (name, len) in parts {
+            pkg.set_part(name, vec![b'a'; *len]);
+        }
+        write_package(&pkg).unwrap()
+    }
+
+    fn message(r: Result<OpcPackage, SlxError>) -> String {
+        match r {
+            Err(SlxError::Package(m)) => m,
+            other => panic!("expected a package error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn limits_are_enforced_on_unpacked_sizes() {
+        // 8 bytes of content types + 100 + 100.
+        let bytes = package(&[("a.xml", 100), ("b.xml", 100)]);
+        let lim = |max_parts, max_part_bytes, max_total_bytes| OpcLimits {
+            max_parts,
+            max_part_bytes,
+            max_total_bytes,
+        };
+        assert_eq!(
+            read_package_with_limits(&bytes, &lim(3, 100, 208))
+                .unwrap()
+                .parts
+                .len(),
+            3
+        );
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(2, 100, 208))),
+            "too many parts (3, limit 2)"
+        );
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 99, 208))),
+            "part 'a.xml' is larger than 99 bytes"
+        );
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 100, 207))),
+            "package is larger than 207 bytes when unpacked"
+        );
+        assert!(read_package(&bytes).is_ok());
+    }
 }

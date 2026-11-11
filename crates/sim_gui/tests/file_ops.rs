@@ -148,3 +148,25 @@ fn missing_params_are_filled_with_defaults() {
     );
     assert!(!st.doc.history.is_dirty());
 }
+
+#[test]
+fn failed_slx_open_is_reported_in_the_status_bar() {
+    let mut st = opened();
+    let missing = std::env::temp_dir().join("simpylink-no-such-model.slx");
+    let err = st.open_path(&missing).expect_err("missing file");
+    assert!(err.starts_with("Could not open "), "{err}");
+    assert_eq!(st.status, err);
+    // The document that was open stays open.
+    assert_eq!(st.doc.model.root.blocks.len(), 3);
+}
+
+#[test]
+fn replacing_the_document_leaves_no_simulation_behind() {
+    let mut st = opened();
+    st.perform(PendingAction::New);
+    assert!(!st.sim.is_running());
+    assert!(st.results.is_none());
+    st.perform(PendingAction::Quit);
+    assert!(!st.sim.is_running());
+    assert!(st.quit_confirmed);
+}

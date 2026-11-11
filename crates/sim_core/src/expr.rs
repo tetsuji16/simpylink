@@ -215,7 +215,15 @@ struct Parser<'w> {
     i: usize,
     bracket_depth: usize,
     paren_depth: usize,
+    /// Current nesting of `parse_unary`; every recursive cycle passes through it.
+    depth: usize,
 }
+
+/// Deepest nesting (parentheses, brackets, unary signs, `^` chains) an expression may have.
+///
+/// The parser is recursive, so an unbounded depth would overflow the stack on a
+/// hostile parameter string such as 100 000 opening parentheses.
+pub const MAX_EXPR_DEPTH: usize = 64;
 
 impl Parser<'_> {
     fn peek(&self) -> &Token {
@@ -288,6 +296,15 @@ impl Parser<'_> {
         Ok(v)
     }
     fn parse_unary(&mut self) -> Result<Value, ExprError> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            return err("expression is nested too deeply", self.peek().pos);
+        }
+        self.depth += 1;
+        let v = self.parse_unary_inner();
+        self.depth -= 1;
+        v
+    }
+    fn parse_unary_inner(&mut self) -> Result<Value, ExprError> {
         let t = self.peek().clone();
         match t.tok {
             Tok::Minus => {
@@ -595,6 +612,7 @@ pub fn parse_value_in(src: &str, ws: &Workspace) -> Result<Value, ExprError> {
         i: 0,
         bracket_depth: 0,
         paren_depth: 0,
+        depth: 0,
     };
     let v = p.parse_expr()?;
     if p.peek().tok != Tok::End {
@@ -688,6 +706,22 @@ mod tests {
         let expected: std::collections::BTreeSet<String> =
             ["Kp", "t0", "az.U"].into_iter().map(String::from).collect();
         assert_eq!(idents, expected);
+    }
+    #[test]
+    fn nesting_is_limited() {
+        // Deep but legal.
+        let ok = format!("{}1{}", "(".repeat(30), ")".repeat(30));
+        assert_eq!(parse_value(&ok), Ok(Value::Scalar(1.0)));
+        // Hostile inputs must fail with an error, not overflow the stack.
+        for src in [
+            format!("{}1", "(".repeat(100_000)),
+            format!("{}1", "-".repeat(100_000)),
+            format!("{}1", "2^".repeat(100_000)),
+            format!("{}1", "sin(".repeat(100_000)),
+        ] {
+            let e = parse_value(&src).unwrap_err();
+            assert_eq!(e.message, "expression is nested too deeply");
+        }
     }
     #[test]
     fn errors() {
