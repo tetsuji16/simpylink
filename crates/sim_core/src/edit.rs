@@ -73,6 +73,9 @@ pub enum Command {
 /// Edit failure. The model is unchanged when an error is returned.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum EditError {
+    /// No ID can be allocated while keeping the next-ID counter representable.
+    #[error("no free block or line id left")]
+    IdSpaceExhausted,
     #[error("system not found")]
     SystemNotFound,
     #[error("block {0:?} not found")]
