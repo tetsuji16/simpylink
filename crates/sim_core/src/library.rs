@@ -1251,6 +1251,7 @@ mod tests {
 mod logic_port_limits {
     use super::*;
 
+    /// Variable input counts respect the allocation bound; NOT always has one input.
     #[test]
     fn logic_uses_bounded_input_counts_except_for_not() {
         let mut p = BTreeMap::new();

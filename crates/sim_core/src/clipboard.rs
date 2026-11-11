@@ -53,12 +53,14 @@ pub fn copy_selection(
     }
 }
 
+/// Reserves an ID while keeping the next-ID counter representable.
 fn allocate_id(next: &mut u32) -> Result<u32, EditError> {
     let id = *next;
     *next = next.checked_add(1).ok_or(EditError::IdSpaceExhausted)?;
     Ok(id)
 }
 
+/// Resolves an endpoint in its own system, rejecting missing blocks.
 fn remap_port(port: PortRef, map: &BTreeMap<BlockId, BlockId>) -> Result<PortRef, EditError> {
     Ok(PortRef {
         block: *map
@@ -68,6 +70,7 @@ fn remap_port(port: PortRef, map: &BTreeMap<BlockId, BlockId>) -> Result<PortRef
     })
 }
 
+/// Remaps branch endpoints recursively and translates their geometry.
 fn remap_branches(
     bs: &mut [Branch],
     map: &BTreeMap<BlockId, BlockId>,
@@ -85,6 +88,7 @@ fn remap_branches(
     Ok(())
 }
 
+/// Remaps all endpoints of a line and translates its geometry.
 fn remap_line(
     line: &mut Line,
     map: &BTreeMap<BlockId, BlockId>,

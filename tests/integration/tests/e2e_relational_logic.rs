@@ -7,6 +7,7 @@ use sim_core::model::{Block, Line, Model, PortRef, System};
 use sim_integration::e2e::{assert_close, simulate_model};
 use sim_integration::load_fixture;
 
+/// Changes one parameter of a fixture block.
 fn set(m: &mut Model, sid: u32, k: &str, v: &str) {
     m.root
         .blocks
@@ -17,6 +18,7 @@ fn set(m: &mut Model, sid: u32, k: &str, v: &str) {
         .insert(k.into(), v.into());
 }
 
+/// Builds a directed test connection with an explicit input port.
 fn line(id: u32, src: u32, dst: u32, port: u32) -> Line {
     Line {
         id: LineId(id),
@@ -34,6 +36,7 @@ fn line(id: u32, src: u32, dst: u32, port: u32) -> Line {
     }
 }
 
+/// Builds a uniquely named constant source for operator tests.
 fn constant(sid: u32, value: f64) -> Block {
     let mut b = new_block(
         &System::default(),
@@ -47,6 +50,7 @@ fn constant(sid: u32, value: f64) -> Block {
     b
 }
 
+/// Builds a scope sink for the test output.
 fn scope(sid: u32) -> Block {
     let mut b = new_block(
         &System::default(),
@@ -59,6 +63,7 @@ fn scope(sid: u32) -> Block {
     b
 }
 
+/// Builds a logical block with the chosen operator and input count.
 fn logic(sid: u32, operator: &str, inputs: &str) -> Block {
     let mut b = new_block(
         &System::default(),
@@ -73,6 +78,7 @@ fn logic(sid: u32, operator: &str, inputs: &str) -> Block {
     b
 }
 
+/// Builds a simulation that records its output at two times.
 fn two_sample_model(blocks: Vec<Block>, lines: Vec<Line>, name: &str) -> Model {
     let mut m = Model::new(name);
     m.config.stop_time = 0.5;
@@ -107,6 +113,7 @@ fn not_of(a: f64) -> f64 {
     simulate_model(&m).unwrap().channels[0].values[0]
 }
 
+/// Checks the combined fixture against its documented output sequences.
 #[test]
 fn relational_and_logic_values() {
     let r = simulate_model(&load_fixture("relational_logic")).unwrap();
@@ -128,6 +135,7 @@ fn not_ignores_the_inputs_count() {
     assert_close(&r.channels[2].values, &[1.0, 1.0, 0.0, 0.0, 0.0], 1e-12);
 }
 
+/// Checks all binary truth tables, including parity and negated operators.
 #[test]
 fn the_logical_operators_follow_their_truth_tables() {
     // Order: (0,0), (0,1), (1,0), (1,1).
@@ -147,6 +155,7 @@ fn the_logical_operators_follow_their_truth_tables() {
     }
 }
 
+/// NOT treats every nonzero scalar as true.
 #[test]
 fn not_inverts_the_truth_value() {
     assert_eq!(not_of(0.0), 1.0);
@@ -154,6 +163,7 @@ fn not_inverts_the_truth_value() {
     assert_eq!(not_of(-2.5), 0.0);
 }
 
+/// Type predicates use one input, while comparisons use two.
 #[test]
 fn the_type_checks_take_one_input() {
     let spec = sim_core::library::spec("RelationalOperator").unwrap();
@@ -167,6 +177,7 @@ fn the_type_checks_take_one_input() {
     assert_eq!((spec.ports)(&params).unwrap().inputs, 2);
 }
 
+/// Checks finite-value predicates through generated Python execution.
 #[test]
 fn the_type_checks_agree_with_python() {
     for (op, want) in [("isFinite", 1.0), ("isInf", 0.0), ("isNaN", 0.0)] {
@@ -203,6 +214,7 @@ fn a_non_boolean_output_data_type_warns() {
         .any(|d| d.code == W_DATA_TYPE_IGNORED));
 }
 
+/// Registry defaults match the issue contract for imported omitted parameters.
 #[test]
 fn defaults_match_the_reference() {
     let relational = sim_core::library::spec("RelationalOperator").unwrap();
@@ -218,6 +230,7 @@ fn defaults_match_the_reference() {
     assert_eq!(params, vec![("Operator", "AND"), ("Inputs", "2")]);
 }
 
+/// XOR and NXOR count NumPy state comparisons as individual truth values.
 #[test]
 fn parity_counts_truth_values_from_numpy_states() {
     for (op, want) in [("XOR", 0.0), ("NXOR", 1.0)] {

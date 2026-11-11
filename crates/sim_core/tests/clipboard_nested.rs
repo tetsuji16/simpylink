@@ -9,6 +9,7 @@ use sim_core::path::SystemPath;
 use sim_core::validate::validate_model;
 use std::collections::BTreeSet;
 
+/// Builds a registered block with default parameters for the fixture.
 fn block(id: u32, kind: &str) -> Block {
     new_block(
         &System::default(),
@@ -19,6 +20,7 @@ fn block(id: u32, kind: &str) -> Block {
     .unwrap()
 }
 
+/// Builds a reference to the first port of a fixture block.
 fn port(id: u32) -> PortRef {
     PortRef {
         block: BlockId(id),
@@ -26,6 +28,7 @@ fn port(id: u32) -> PortRef {
     }
 }
 
+/// Builds a subsystem containing a source, sink and connecting line.
 fn subsystem(id: u32) -> Block {
     let mut outer = block(id, "SubSystem");
     outer.system = Some(System {
@@ -42,6 +45,7 @@ fn subsystem(id: u32) -> Block {
     outer
 }
 
+/// Builds a fixture with one or two levels and valid global counters.
 fn model(nested: bool) -> Model {
     let mut m = Model::new("nested");
     let mut outer = subsystem(1);
@@ -54,6 +58,7 @@ fn model(nested: bool) -> Model {
     m
 }
 
+/// Checks global ID uniqueness, local endpoints and next-ID counters.
 fn assert_ids(m: &Model) {
     fn walk(sys: &System, blocks: &mut BTreeSet<BlockId>, lines: &mut BTreeSet<LineId>) {
         for b in &sys.blocks {
@@ -79,6 +84,7 @@ fn assert_ids(m: &Model) {
     }
 }
 
+/// Checks repeated paste, content restoration and redo without ID reuse.
 fn paste_and_undo(nested: bool, repeats: usize) {
     let mut m = model(nested);
     let before = m.clone();
@@ -114,19 +120,23 @@ fn paste_and_undo(nested: bool, repeats: usize) {
     assert_eq!(m, after);
 }
 
+/// Pasting a subsystem gives every contained object a fresh ID.
 #[test]
 fn paste_subsystem() {
     paste_and_undo(false, 1);
 }
+/// Nested subsystems receive fresh IDs at every level.
 #[test]
 fn paste_two_levels() {
     paste_and_undo(true, 1);
 }
+/// Repeated paste does not reuse nested block or line IDs.
 #[test]
 fn paste_same_payload_twice() {
     paste_and_undo(true, 2);
 }
 
+/// Malformed sources, destinations and nested branches leave the model intact.
 #[test]
 fn missing_nested_endpoints_are_rejected_without_changes() {
     let m = model(false);
@@ -158,6 +168,7 @@ fn missing_nested_endpoints_are_rejected_without_changes() {
     }
 }
 
+/// Outer IDs precede depth-first nested IDs; local branch geometry is preserved.
 #[test]
 fn outer_ids_are_reserved_before_depth_first_nested_ids() {
     let mut m = model(true);
@@ -211,6 +222,7 @@ fn outer_ids_are_reserved_before_depth_first_nested_ids() {
     );
 }
 
+/// ID exhaustion is atomic, while the last representable next counter is accepted.
 #[test]
 fn exhausted_block_and_line_ids_return_errors_without_changes() {
     let base = model(false);

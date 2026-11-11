@@ -128,6 +128,7 @@ fn period(b: &IrBlock) -> R<String> {
 }
 
 /// Builds a block's Python output expression, or none for blocks without outputs.
+/// Builds the scalar output expression, or no expression for state-only blocks.
 fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
     let vb = b.var_base.to_uppercase();
     let s0 = b.cont_state.as_ref().map(|r| r.start).unwrap_or(0);
