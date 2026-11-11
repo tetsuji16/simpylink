@@ -130,6 +130,15 @@ pub enum IrBlockKind {
         lower: f64,
         upper: f64,
     },
+    /// Relational operator (#170).
+    Relational {
+        op: RelOp,
+    },
+    /// Logical operator on `inputs` signals (#170).
+    Logic {
+        op: LogicOp,
+        inputs: u32,
+    },
     Bias {
         bias: f64,
     },
@@ -299,6 +308,47 @@ pub enum SqrtOp {
     Sqrt,
     SignedSqrt,
     RSqrt,
+}
+
+/// Relational operators (#170).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Ge,
+    Gt,
+    IsInf,
+    IsNaN,
+    IsFinite,
+}
+
+impl RelOp {
+    /// The Python comparison operator, or `None` for the type checks.
+    pub fn py_operator(self) -> Option<&'static str> {
+        match self {
+            RelOp::Eq => Some("=="),
+            RelOp::Ne => Some("!="),
+            RelOp::Lt => Some("<"),
+            RelOp::Le => Some("<="),
+            RelOp::Ge => Some(">="),
+            RelOp::Gt => Some(">"),
+            RelOp::IsInf | RelOp::IsNaN | RelOp::IsFinite => None,
+        }
+    }
+}
+
+/// Logical operators (#170).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicOp {
+    And,
+    Or,
+    Nand,
+    Nor,
+    Xor,
+    Nxor,
+    Not,
 }
 
 /// One logged channel.

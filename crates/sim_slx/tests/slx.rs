@@ -734,3 +734,21 @@ fn opaque_port_counts_preserve_lines_and_aggregate_physical_connections() {
         .contains_key("__opaque_inputs"));
     assert_eq!(imp.report.warnings.len(), 1);
 }
+
+/// XML entities in a parameter value are decoded on import (#170).
+#[test]
+fn relational_operator_entities_are_decoded() {
+    let root = br#"<System><Block BlockType="RelationalOperator" Name="R" SID="1"><P Name="Position">[10, 10, 40, 42]</P><P Name="Operator">&gt;</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(
+        imp.model.root.blocks[0]
+            .params
+            .get("Operator")
+            .map(String::as_str),
+        Some(">")
+    );
+}

@@ -1,6 +1,6 @@
 //! Block lowering: parameter evaluation into IrBlockKind.
 use crate::realize::tf_to_ss;
-use crate::types::{IrBlockKind, MathOp, SampleTime, SqrtOp, TrigOp};
+use crate::types::{IrBlockKind, LogicOp, MathOp, RelOp, SampleTime, SqrtOp, TrigOp};
 use sim_core::diag::{codes::*, Diagnostic, Location};
 use sim_core::expr::{parse_value_in, Matrix};
 use sim_core::library::{
@@ -230,6 +230,51 @@ pub fn lower_block_in(
                 return Err(l.domain("lower value must not exceed upper value"));
             }
             (IrBlockKind::DeadZone { lower, upper }, l.st()?)
+        }
+        "RelationalOperator" => {
+            let op = match l.text("Operator")? {
+                "==" => RelOp::Eq,
+                "~=" => RelOp::Ne,
+                "<" => RelOp::Lt,
+                "<=" => RelOp::Le,
+                ">=" => RelOp::Ge,
+                ">" => RelOp::Gt,
+                "isInf" => RelOp::IsInf,
+                "isNaN" => RelOp::IsNaN,
+                "isFinite" => RelOp::IsFinite,
+                other => {
+                    return Err(l.eval_err("Operator", format!("unknown operator '{other}'")));
+                }
+            };
+            (IrBlockKind::Relational { op }, l.st()?)
+        }
+        "Logic" => {
+            let op = match l.text("Operator")? {
+                "AND" => LogicOp::And,
+                "OR" => LogicOp::Or,
+                "NAND" => LogicOp::Nand,
+                "NOR" => LogicOp::Nor,
+                "XOR" => LogicOp::Xor,
+                "NXOR" => LogicOp::Nxor,
+                "NOT" => LogicOp::Not,
+                other => {
+                    return Err(l.eval_err("Operator", format!("unknown operator '{other}'")));
+                }
+            };
+            let inputs = if op == LogicOp::Not {
+                1
+            } else {
+                let n = l
+                    .raw("Inputs")?
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|e| l.eval_err("Inputs", e))?;
+                if n == 0 {
+                    return Err(l.eval_err("Inputs", "must be a positive integer"));
+                }
+                n
+            };
+            (IrBlockKind::Logic { op, inputs }, l.st()?)
         }
         "Trigonometry" => {
             let op = match l.text("Operator")? {

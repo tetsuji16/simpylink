@@ -65,13 +65,14 @@ pub struct BlockSpec {
 }
 
 /// Library headings in display order.
-pub const LIBRARIES: [&str; 8] = [
+pub const LIBRARIES: [&str; 9] = [
     "Sources",
     "Sinks",
     "Math Operations",
     "Continuous",
     "Discrete",
     "Discontinuities",
+    "Logic and Bit Operations",
     "Ports & Subsystems",
     "Signal Routing",
 ];
@@ -242,6 +243,44 @@ fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
 /// `Inputs` of MinMax; the default is 1, not 2 (#169).
 fn minmax_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let n = port_count(p.get("Inputs"), 1)?;
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// Inputs of Relational Operator: the type checks take one input (#170).
+fn relational_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or(">=");
+    Ok(PortCounts {
+        inputs: if matches!(op, "isInf" | "isNaN" | "isFinite") {
+            1
+        } else {
+            2
+        },
+        outputs: 1,
+    })
+}
+
+/// Inputs of Logical Operator: NOT takes one, everything else `Inputs` (#170).
+fn logic_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("AND");
+    if op == "NOT" {
+        return Ok(PortCounts {
+            inputs: 1,
+            outputs: 1,
+        });
+    }
+    let n = match p.get("Inputs") {
+        None => 2,
+        Some(s) => s
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "must be a positive integer".to_string())?,
+    };
+    if n == 0 {
+        return Err("must be a positive integer".into());
+    }
     Ok(PortCounts {
         inputs: n,
         outputs: 1,
@@ -774,6 +813,46 @@ static REGISTRY: &[BlockSpec] = &[
         ports: ports_1_1,
         base_name: "Dead Zone",
         description: "Zero output inside the dead zone (no zero-crossing detection)",
+    },
+    BlockSpec {
+        block_type: "RelationalOperator",
+        display_name: "Relational Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 32.0),
+        params: &[p(
+            "Operator",
+            "Relational operator",
+            ">=",
+            ParamKind::Enum(&[
+                "==", "~=", "<", "<=", ">=", ">", "isInf", "isNaN", "isFinite",
+            ]),
+        )],
+        ports: relational_ports,
+        base_name: "Relational Operator",
+        description: "Compare two signals; the output is 1.0 or 0.0",
+    },
+    BlockSpec {
+        block_type: "Logic",
+        display_name: "Logical Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 31.0),
+        params: &[
+            p(
+                "Operator",
+                "Operator",
+                "AND",
+                ParamKind::Enum(&["AND", "OR", "NAND", "NOR", "XOR", "NXOR", "NOT"]),
+            ),
+            p(
+                "Inputs",
+                "Number of input ports",
+                "2",
+                ParamKind::PositiveInt,
+            ),
+        ],
+        ports: logic_ports,
+        base_name: "Logical Operator",
+        description: "Logical operation on the inputs; the output is 1.0 or 0.0",
     },
     BlockSpec {
         block_type: "Mux",
