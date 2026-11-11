@@ -271,16 +271,7 @@ fn logic_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
             outputs: 1,
         });
     }
-    let n = match p.get("Inputs") {
-        None => 2,
-        Some(s) => s
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "must be a positive integer".to_string())?,
-    };
-    if n == 0 {
-        return Err("must be a positive integer".into());
-    }
+    let n = port_count(p.get("Inputs"), 2)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 1,
@@ -1253,5 +1244,28 @@ mod tests {
         assert_eq!(g.params.len(), 2);
         assert_eq!(g.params["Gain"], "5");
         assert_eq!(g.params["SampleTime"], "-1");
+    }
+}
+
+#[cfg(test)]
+mod logic_port_limits {
+    use super::*;
+
+    #[test]
+    fn logic_uses_bounded_input_counts_except_for_not() {
+        let mut p = BTreeMap::new();
+        assert_eq!(logic_ports(&p).unwrap().inputs, 2);
+        for op in ["AND", "OR", "NAND", "NOR", "XOR", "NXOR"] {
+            p.insert("Operator".into(), op.into());
+            p.insert("Inputs".into(), MAX_PORTS.to_string());
+            assert_eq!(logic_ports(&p).unwrap().inputs, MAX_PORTS);
+            for bad in ["257", "4294967295", "0", "1.5", "bad"] {
+                p.insert("Inputs".into(), bad.into());
+                assert!(logic_ports(&p).is_err(), "{op}: {bad}");
+            }
+        }
+        p.insert("Operator".into(), "NOT".into());
+        p.insert("Inputs".into(), "4294967295".into());
+        assert_eq!(logic_ports(&p).unwrap().inputs, 1);
     }
 }

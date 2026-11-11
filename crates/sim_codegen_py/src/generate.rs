@@ -238,8 +238,8 @@ fn output_expr(c: &Ctx, b: &IrBlock) -> R<Option<String>> {
             let cond = match op {
                 LogicOp::And | LogicOp::Nand => terms.join(" and "),
                 LogicOp::Or | LogicOp::Nor => terms.join(" or "),
-                LogicOp::Xor => format!("(({}) % 2 == 1)", terms.join(" + ")),
-                LogicOp::Nxor => format!("(({}) % 2 == 0)", terms.join(" + ")),
+                LogicOp::Xor => format!("(sum([{}]) % 2 == 1)", terms.join(", ")),
+                LogicOp::Nxor => format!("(sum([{}]) % 2 == 0)", terms.join(", ")),
                 LogicOp::Not => terms.first().cloned().unwrap_or_else(|| "False".into()),
             };
             let negated = matches!(op, LogicOp::Nand | LogicOp::Nor | LogicOp::Not);

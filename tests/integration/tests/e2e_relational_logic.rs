@@ -217,3 +217,22 @@ fn defaults_match_the_reference() {
     let params: Vec<(&str, &str)> = logic.params.iter().map(|p| (p.name, p.default)).collect();
     assert_eq!(params, vec![("Operator", "AND"), ("Inputs", "2")]);
 }
+
+#[test]
+fn parity_counts_truth_values_from_numpy_states() {
+    for (op, want) in [("XOR", 0.0), ("NXOR", 1.0)] {
+        let mut a = constant(1, 1.0);
+        a.block_type = "Integrator".into();
+        a.params = std::collections::BTreeMap::from([("InitialCondition".into(), "1".into())]);
+        let mut b = a.clone();
+        b.sid = BlockId(2);
+        b.name = "Integrator2".into();
+        let m = two_sample_model(
+            vec![a, b, logic(3, op, "2"), scope(4)],
+            vec![line(1, 1, 3, 1), line(2, 2, 3, 2), line(3, 3, 4, 1)],
+            "numpy_parity",
+        );
+        let r = simulate_model(&m).unwrap();
+        assert_close(&r.channels[0].values, &[want; 2], 1e-12);
+    }
+}
