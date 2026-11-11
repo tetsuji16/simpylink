@@ -3,6 +3,7 @@ use sim_core::model::SolverKind;
 use sim_integration::e2e::{assert_close, simulate_model};
 use sim_integration::load_fixture;
 
+/// Compares the integrated sine samples and held outputs against their analytic values.
 fn check_integral(solver: SolverKind, output_step: f64, tolerance: f64) {
     let mut model = load_fixture("zoh_integrator");
     model.config.solver = solver;
@@ -32,22 +33,26 @@ fn check_integral(solver: SolverKind, output_step: f64, tolerance: f64) {
     assert!((results.channels[0].values.last().unwrap() - final_value).abs() <= tolerance);
 }
 
+/// RK4 must integrate one constant held value over each sample interval.
 #[test]
 fn rk4_integrates_the_held_samples() {
     check_integral(SolverKind::Ode4, 0.5, 1e-9);
 }
 
+/// Adaptive solver stages must use the same stored samples as fixed steps.
 #[test]
 fn adaptive_solver_integrates_the_held_samples() {
     check_integral(SolverKind::Auto, 0.5, 1e-6);
 }
 
+/// Extra output times must neither resample the input nor alter the integral.
 #[test]
 fn output_times_between_sample_hits_preserve_the_hold() {
     check_integral(SolverKind::Ode4, 0.125, 1e-9);
     check_integral(SolverKind::Auto, 0.125, 1e-6);
 }
 
+/// The first solver stage must retain the ZOH sample taken before delay updates.
 #[test]
 fn simultaneous_delay_updates_do_not_change_the_sampled_input() {
     for solver in [SolverKind::Ode4, SolverKind::Auto] {
