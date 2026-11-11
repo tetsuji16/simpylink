@@ -65,13 +65,14 @@ pub struct BlockSpec {
 }
 
 /// Library headings in display order.
-pub const LIBRARIES: [&str; 8] = [
+pub const LIBRARIES: [&str; 9] = [
     "Sources",
     "Sinks",
     "Math Operations",
     "Continuous",
     "Discrete",
     "Discontinuities",
+    "Logic and Bit Operations",
     "Ports & Subsystems",
     "Signal Routing",
 ];
@@ -242,6 +243,35 @@ fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
 /// `Inputs` of MinMax; the default is 1, not 2 (#169).
 fn minmax_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
     let n = port_count(p.get("Inputs"), 1)?;
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// Inputs of Relational Operator: the type checks take one input (#170).
+fn relational_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or(">=");
+    Ok(PortCounts {
+        inputs: if matches!(op, "isInf" | "isNaN" | "isFinite") {
+            1
+        } else {
+            2
+        },
+        outputs: 1,
+    })
+}
+
+/// Inputs of Logical Operator: NOT takes one, everything else `Inputs` (#170).
+fn logic_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("AND");
+    if op == "NOT" {
+        return Ok(PortCounts {
+            inputs: 1,
+            outputs: 1,
+        });
+    }
+    let n = port_count(p.get("Inputs"), 2)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 1,
@@ -776,6 +806,46 @@ static REGISTRY: &[BlockSpec] = &[
         description: "Zero output inside the dead zone (no zero-crossing detection)",
     },
     BlockSpec {
+        block_type: "RelationalOperator",
+        display_name: "Relational Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 32.0),
+        params: &[p(
+            "Operator",
+            "Relational operator",
+            ">=",
+            ParamKind::Enum(&[
+                "==", "~=", "<", "<=", ">=", ">", "isInf", "isNaN", "isFinite",
+            ]),
+        )],
+        ports: relational_ports,
+        base_name: "Relational Operator",
+        description: "Compare two signals; the output is 1.0 or 0.0",
+    },
+    BlockSpec {
+        block_type: "Logic",
+        display_name: "Logical Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 31.0),
+        params: &[
+            p(
+                "Operator",
+                "Operator",
+                "AND",
+                ParamKind::Enum(&["AND", "OR", "NAND", "NOR", "XOR", "NXOR", "NOT"]),
+            ),
+            p(
+                "Inputs",
+                "Number of input ports",
+                "2",
+                ParamKind::PositiveInt,
+            ),
+        ],
+        ports: logic_ports,
+        base_name: "Logical Operator",
+        description: "Logical operation on the inputs; the output is 1.0 or 0.0",
+    },
+    BlockSpec {
         block_type: "Mux",
         display_name: "Mux",
         library: "Signal Routing",
@@ -1174,5 +1244,29 @@ mod tests {
         assert_eq!(g.params.len(), 2);
         assert_eq!(g.params["Gain"], "5");
         assert_eq!(g.params["SampleTime"], "-1");
+    }
+}
+
+#[cfg(test)]
+mod logic_port_limits {
+    use super::*;
+
+    /// Variable input counts respect the allocation bound; NOT always has one input.
+    #[test]
+    fn logic_uses_bounded_input_counts_except_for_not() {
+        let mut p = BTreeMap::new();
+        assert_eq!(logic_ports(&p).unwrap().inputs, 2);
+        for op in ["AND", "OR", "NAND", "NOR", "XOR", "NXOR"] {
+            p.insert("Operator".into(), op.into());
+            p.insert("Inputs".into(), MAX_PORTS.to_string());
+            assert_eq!(logic_ports(&p).unwrap().inputs, MAX_PORTS);
+            for bad in ["257", "4294967295", "0", "1.5", "bad"] {
+                p.insert("Inputs".into(), bad.into());
+                assert!(logic_ports(&p).is_err(), "{op}: {bad}");
+            }
+        }
+        p.insert("Operator".into(), "NOT".into());
+        p.insert("Inputs".into(), "4294967295".into());
+        assert_eq!(logic_ports(&p).unwrap().inputs, 1);
     }
 }

@@ -79,8 +79,23 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
             Err(d) => diags.push(d),
         }
     }
-    // Parameters that are read but not honoured (#167).
+    // Parameters that are read but not honoured (#167, #170).
     for fb in &flat {
+        if matches!(fb.block.block_type.as_str(), "RelationalOperator" | "Logic") {
+            if let Some(dt) = fb.block.params.get("OutDataTypeStr") {
+                let dt = dt.trim();
+                if dt != "boolean" && !dt.starts_with("Inherit") {
+                    diags.push(Diagnostic::warning(
+                        W_DATA_TYPE_IGNORED,
+                        format!(
+                            "output data type '{dt}' of '{}' is ignored; the output is double",
+                            fb.block.name
+                        ),
+                        Location::block(&fb.path, fb.block.sid),
+                    ));
+                }
+            }
+        }
         if fb.block.block_type == "Trigonometry"
             && fb
                 .block
