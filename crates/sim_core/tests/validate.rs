@@ -197,3 +197,94 @@ fn dangling_line_and_unconnected_scope_are_reported() {
         .iter()
         .any(|d| { d.code == W_UNCONNECTED_INPUT && d.location.block == Some(BlockId(3)) }));
 }
+
+#[test]
+fn control_characters_in_a_block_name_are_reported() {
+    let mut model = fixture("step_gain_scope");
+    model.root.blocks[1].name = "a\nb".into();
+    let diagnostics = validate_model(&model);
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.code == E_INVALID_NAME
+                && d.message == "name must not contain control characters"
+                && d.location.block == Some(BlockId(2))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn unicode_line_separators_count_as_control_characters() {
+    let mut model = fixture("step_gain_scope");
+    model.root.blocks[1].name = "a\u{2028}b".into();
+    assert!(codes(&model).contains(&E_INVALID_NAME.to_string()));
+}
+
+#[test]
+fn an_empty_block_name_is_reported() {
+    let mut model = fixture("step_gain_scope");
+    model.root.blocks[1].name.clear();
+    let diagnostics = validate_model(&model);
+    assert!(
+        diagnostics.iter().any(|d| {
+            d.code == E_INVALID_NAME
+                && d.message == "name must not be empty"
+                && d.location.block == Some(BlockId(2))
+        }),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn control_characters_in_a_line_name_are_reported() {
+    let mut model = fixture("step_gain_scope");
+    model.root.lines[0].name = "sig\tnal".into();
+    let diagnostics = validate_model(&model);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| { d.code == E_INVALID_NAME && d.location.line == Some(LineId(1)) }),
+        "{diagnostics:?}"
+    );
+    // An unnamed line is normal and must stay valid.
+    model.root.lines[0].name.clear();
+    assert!(!codes(&model).contains(&E_INVALID_NAME.to_string()));
+}
+
+#[test]
+fn control_characters_in_a_goto_tag_are_reported() {
+    let mut model = fixture("goto_from");
+    let block = model
+        .root
+        .blocks
+        .iter_mut()
+        .find(|b| b.block_type == "Goto")
+        .expect("goto block");
+    block.params.insert("GotoTag".into(), "a\rb".into());
+    let diagnostics = validate_model(&model);
+    assert!(
+        diagnostics.iter().any(|d| d.code == E_INVALID_NAME),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
+fn non_finite_geometry_is_reported_per_block_and_line() {
+    let mut model = fixture("step_gain_scope");
+    model.root.blocks[0].position.left = f64::NAN;
+    model.root.lines[1]
+        .points
+        .push(Point::new(0.0, f64::INFINITY));
+    let diagnostics = validate_model(&model);
+    let geometry: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == E_NON_FINITE_GEOMETRY)
+        .collect();
+    assert_eq!(geometry.len(), 2, "{diagnostics:?}");
+    assert_eq!(geometry[0].location.block, Some(BlockId(1)));
+    assert_eq!(geometry[1].location.line, Some(LineId(2)));
+    assert_eq!(
+        geometry[0].message,
+        "block position and line points must be finite"
+    );
+}
