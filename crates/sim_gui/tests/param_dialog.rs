@@ -215,6 +215,28 @@ fn app_state_keeps_the_model_when_the_port_count_is_rejected() {
 }
 
 #[test]
+fn a_broken_original_count_does_not_let_a_broken_edit_through() {
+    // A model that already stores Inputs = 257: editing it to 258 must still be rejected.
+    let mut m = model_with("Mux");
+    m.root
+        .block_mut(BlockId(1))
+        .expect("mux")
+        .params
+        .insert("Inputs".into(), "257".into());
+    let mut d = open_block(&m);
+    d.set_value(0, "258".into());
+    assert_eq!(d.fields[0].error, Some("must be at most 256".to_string()));
+    assert_eq!(d.press(DialogButton::Ok), DialogOutcome::KeepOpen);
+    // Fixing it is accepted.
+    d.set_value(0, "8".into());
+    assert_eq!(d.fields[0].error, None);
+    assert!(matches!(
+        d.press(DialogButton::Ok),
+        DialogOutcome::CloseAndExecute(_)
+    ));
+}
+
+#[test]
 fn app_state_applies_and_undoes_param_change() {
     let mut st = AppState::new();
     st.doc.model = fixture();

@@ -44,9 +44,10 @@ impl RetainedLines {
 /// Most line events waiting between the child process and the caller.
 ///
 /// A script that prints faster than the caller polls would otherwise grow the queue
-/// without bound. Once the queue is full, further lines are dropped and counted
-/// (`RunHandle::dropped_events`); `Started` and `Finished` are never dropped, and the
-/// newest [`MAX_RETAINED_LINES`] lines still arrive inside `RunOutcome`.
+/// without bound. Once this many line events are pending, further lines are dropped and
+/// counted (`RunHandle::dropped_events`); `Started` and `Finished` do not use these slots
+/// and are never dropped, and the newest [`MAX_RETAINED_LINES`] lines still arrive inside
+/// `RunOutcome`.
 pub const MAX_PENDING_EVENTS: usize = 1024;
 
 /// Queue between the reader threads and the caller.
@@ -62,8 +63,26 @@ struct EventQueue {
 #[derive(Default)]
 struct QueueState {
     events: VecDeque<RunEvent>,
+    /// Line events inside `events`; `Started` / `Finished` are not counted.
+    pending_lines: usize,
     dropped: u64,
     closed: bool,
+}
+
+impl QueueState {
+    /// Pops one event, keeping `pending_lines` in step.
+    fn pop_front(&mut self) -> Option<RunEvent> {
+        let event = self.events.pop_front()?;
+        if is_line(&event) {
+            self.pending_lines = self.pending_lines.saturating_sub(1);
+        }
+        Some(event)
+    }
+}
+
+/// True for the per-line events that [`MAX_PENDING_EVENTS`] limits.
+fn is_line(event: &RunEvent) -> bool {
+    matches!(event, RunEvent::Stdout(_) | RunEvent::Stderr(_))
 }
 
 impl EventQueue {
@@ -81,14 +100,15 @@ impl EventQueue {
         }
     }
 
-    /// Enqueues a line event, or drops it when the queue is already full.
+    /// Enqueues a line event, or drops it when [`MAX_PENDING_EVENTS`] lines are pending.
     fn push_line(&self, event: RunEvent) {
         let mut st = self.lock();
-        if st.events.len() >= MAX_PENDING_EVENTS {
+        if st.pending_lines >= MAX_PENDING_EVENTS {
             st.dropped = st.dropped.saturating_add(1);
             return;
         }
         st.events.push_back(event);
+        st.pending_lines += 1;
         drop(st);
         self.ready.notify_one();
     }
@@ -114,14 +134,14 @@ impl EventQueue {
     }
 
     fn try_pop(&self) -> Option<RunEvent> {
-        self.lock().events.pop_front()
+        self.lock().pop_front()
     }
 
     fn pop_timeout(&self, timeout: Duration) -> Option<RunEvent> {
         let started = Instant::now();
         let mut st = self.lock();
         loop {
-            if let Some(e) = st.events.pop_front() {
+            if let Some(e) = st.pop_front() {
                 return Some(e);
             }
             let elapsed = started.elapsed();
@@ -138,7 +158,7 @@ impl EventQueue {
     fn pop_blocking(&self) -> Option<RunEvent> {
         let mut st = self.lock();
         loop {
-            if let Some(e) = st.events.pop_front() {
+            if let Some(e) = st.pop_front() {
                 return Some(e);
             }
             if st.closed {
@@ -306,10 +326,16 @@ impl RunHandle {
         })
     }
 
-    /// Non-blocking: all pending events.
+    /// Non-blocking: up to [`MAX_PENDING_EVENTS`] pending events.
+    ///
+    /// The drain is bounded so a caller that polls in a loop cannot be kept inside one
+    /// call by a child that prints as fast as the loop removes events.
     pub fn poll_events(&mut self) -> Vec<RunEvent> {
         let mut v = vec![];
-        while let Some(e) = self.events.try_pop() {
+        while v.len() < MAX_PENDING_EVENTS {
+            let Some(e) = self.events.try_pop() else {
+                break;
+            };
             if matches!(e, RunEvent::Finished(_)) {
                 self.finished = true;
             }
@@ -426,16 +452,20 @@ mod tests {
         for i in 0..MAX_PENDING_EVENTS + 500 {
             q.push_line(RunEvent::Stdout(i.to_string()));
         }
-        // The queue never grows past the bound, so the excess is dropped and counted.
-        // `Started` already occupies one slot of the queue.
-        assert_eq!(q.dropped(), 500 + 1);
+        // `Started` does not use a line slot, so exactly the 500 excess lines are dropped.
+        assert_eq!(q.dropped(), 500);
         let mut seen = vec![];
         while let Some(e) = q.try_pop() {
             seen.push(e);
         }
-        assert_eq!(seen.len(), MAX_PENDING_EVENTS);
+        assert_eq!(seen.len(), MAX_PENDING_EVENTS + 1);
         assert_eq!(seen[0], RunEvent::Started);
         assert_eq!(seen[1], RunEvent::Stdout("0".into()));
+        // Draining the lines frees the slots again.
+        for i in 0..MAX_PENDING_EVENTS {
+            q.push_line(RunEvent::Stdout(i.to_string()));
+        }
+        assert_eq!(q.dropped(), 500);
     }
 
     #[test]

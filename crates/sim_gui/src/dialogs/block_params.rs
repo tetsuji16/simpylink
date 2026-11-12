@@ -94,17 +94,26 @@ impl ParamDialogState {
             .map(|f| (f.name.clone(), f.value.clone()))
             .collect()
     }
+    /// The fields with their original values.
+    fn original_params(&self) -> BTreeMap<String, String> {
+        self.fields
+            .iter()
+            .map(|f| (f.name.clone(), f.original.clone()))
+            .collect()
+    }
     /// Field index and message when the edited values would give invalid port counts.
     ///
-    /// The message is attributed to the field that causes it: reverting that one field
-    /// to its original value makes `port_counts` succeed. Values that were not edited
-    /// are never blamed, so a model that is already inconsistent can still be closed.
+    /// The message is attributed to the field that causes it. Values that were not
+    /// edited are never blamed, so a model that is already inconsistent can still be
+    /// closed; but an edited value that is invalid on its own is always reported, even
+    /// when the value it replaced was invalid too (257 -> 258 on a broken model).
     fn port_count_error(&self) -> Option<(usize, String)> {
         let ports = spec(&self.block_type)?.ports;
         let mut params = self.params();
         let Err(message) = ports(&params) else {
             return None;
         };
+        // Prefer the field whose revert alone makes the block valid.
         for (index, f) in self.fields.iter().enumerate() {
             if f.value == f.original {
                 continue;
@@ -113,6 +122,18 @@ impl ParamDialogState {
             let reverted_ok = ports(&params).is_ok();
             params.insert(f.name.clone(), f.value.clone());
             if reverted_ok {
+                return Some((index, message));
+            }
+        }
+        // Otherwise blame the first edited field that is invalid on its own.
+        let original = self.original_params();
+        for (index, f) in self.fields.iter().enumerate() {
+            if f.value == f.original {
+                continue;
+            }
+            let mut alone = original.clone();
+            alone.insert(f.name.clone(), f.value.clone());
+            if let Err(message) = ports(&alone) {
                 return Some((index, message));
             }
         }

@@ -69,7 +69,10 @@ fn fast_output_keeps_the_queue_bounded_and_still_finishes() {
     let mut events = Vec::new();
     let t = Instant::now();
     while !h.is_finished() && t.elapsed() < Duration::from_secs(30) {
-        events.extend(h.poll_events());
+        let batch = h.poll_events();
+        // One poll drains a bounded batch even while the child keeps printing.
+        assert!(batch.len() <= sim_runner::process::MAX_PENDING_EVENTS);
+        events.extend(batch);
         std::thread::sleep(Duration::from_millis(20));
     }
     events.extend(h.poll_events());
