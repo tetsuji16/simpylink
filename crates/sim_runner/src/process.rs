@@ -6,14 +6,13 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Handle to a running simulation.
 pub struct RunHandle {
     child: Arc<Mutex<Option<Child>>>,
-    rx: Receiver<RunEvent>,
+    events: Arc<EventQueue>,
     finished: bool,
     stop_requested: Arc<AtomicBool>,
 }
@@ -39,6 +38,117 @@ impl RetainedLines {
     }
     fn into_vec(self) -> Vec<String> {
         self.lines.into()
+    }
+}
+
+/// Most line events waiting between the child process and the caller.
+///
+/// A script that prints faster than the caller polls would otherwise grow the queue
+/// without bound. Once the queue is full, further lines are dropped and counted
+/// (`RunHandle::dropped_events`); `Started` and `Finished` are never dropped, and the
+/// newest [`MAX_RETAINED_LINES`] lines still arrive inside `RunOutcome`.
+pub const MAX_PENDING_EVENTS: usize = 1024;
+
+/// Queue between the reader threads and the caller.
+///
+/// Unlike an `mpsc` channel it never blocks the producer: the reader threads must keep
+/// draining the child's pipes even when the caller is slow, otherwise the child blocks
+/// on a full pipe and the run never finishes.
+struct EventQueue {
+    state: Mutex<QueueState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct QueueState {
+    events: VecDeque<RunEvent>,
+    dropped: u64,
+    closed: bool,
+}
+
+impl EventQueue {
+    fn new() -> Self {
+        EventQueue {
+            state: Mutex::new(QueueState::default()),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, QueueState> {
+        match self.state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        }
+    }
+
+    /// Enqueues a line event, or drops it when the queue is already full.
+    fn push_line(&self, event: RunEvent) {
+        let mut st = self.lock();
+        if st.events.len() >= MAX_PENDING_EVENTS {
+            st.dropped = st.dropped.saturating_add(1);
+            return;
+        }
+        st.events.push_back(event);
+        drop(st);
+        self.ready.notify_one();
+    }
+
+    /// Enqueues `Started` / `Finished`, which are never dropped.
+    fn push_control(&self, event: RunEvent) {
+        let mut st = self.lock();
+        st.events.push_back(event);
+        drop(st);
+        self.ready.notify_all();
+    }
+
+    /// Marks the end of the stream so a blocked reader returns instead of hanging.
+    fn close(&self) {
+        let mut st = self.lock();
+        st.closed = true;
+        drop(st);
+        self.ready.notify_all();
+    }
+
+    fn dropped(&self) -> u64 {
+        self.lock().dropped
+    }
+
+    fn try_pop(&self) -> Option<RunEvent> {
+        self.lock().events.pop_front()
+    }
+
+    fn pop_timeout(&self, timeout: Duration) -> Option<RunEvent> {
+        let started = Instant::now();
+        let mut st = self.lock();
+        loop {
+            if let Some(e) = st.events.pop_front() {
+                return Some(e);
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= timeout || st.closed {
+                return None;
+            }
+            st = match self.ready.wait_timeout(st, timeout - elapsed) {
+                Ok((g, _)) => g,
+                Err(p) => p.into_inner().0,
+            };
+        }
+    }
+
+    fn pop_blocking(&self) -> Option<RunEvent> {
+        let mut st = self.lock();
+        loop {
+            if let Some(e) = st.events.pop_front() {
+                return Some(e);
+            }
+            if st.closed {
+                return None;
+            }
+            st = match self.ready.wait(st) {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+        }
     }
 }
 
@@ -125,27 +235,27 @@ impl RunHandle {
         no_window(&mut cmd);
         let mut child = cmd.spawn().map_err(|e| RunnerError::Spawn(e.to_string()))?;
         let started = Instant::now();
-        let (tx, rx) = mpsc::channel();
-        let _sent = tx.send(RunEvent::Started);
+        let events = Arc::new(EventQueue::new());
+        events.push_control(RunEvent::Started);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let txo = tx.clone();
+        let out_events = events.clone();
         let out_thread = std::thread::spawn(move || {
             let mut all = RetainedLines::default();
             if let Some(s) = stdout {
                 drain_lines(s, |line| {
-                    let _sent = txo.send(RunEvent::Stdout(line.clone()));
+                    out_events.push_line(RunEvent::Stdout(line.clone()));
                     all.push(line);
                 });
             }
             all.into_vec()
         });
-        let txe = tx.clone();
+        let err_events = events.clone();
         let err_thread = std::thread::spawn(move || {
             let mut all = RetainedLines::default();
             if let Some(s) = stderr {
                 drain_lines(s, |line| {
-                    let _sent = txe.send(RunEvent::Stderr(line.clone()));
+                    err_events.push_line(RunEvent::Stderr(line.clone()));
                     all.push(line);
                 });
             }
@@ -154,6 +264,7 @@ impl RunHandle {
         let child = Arc::new(Mutex::new(Some(child)));
         let stop = Arc::new(AtomicBool::new(false));
         let (c2, s2) = (child.clone(), stop.clone());
+        let finished_events = events.clone();
         std::thread::spawn(move || {
             let mut timed_out = false;
             let code = loop {
@@ -179,16 +290,17 @@ impl RunHandle {
             let out = out_thread.join().unwrap_or_default();
             let err = err_thread.join().unwrap_or_default();
             let status = status_from(code, &err, s2.load(Ordering::SeqCst), timed_out);
-            let _sent = tx.send(RunEvent::Finished(RunOutcome {
+            finished_events.push_control(RunEvent::Finished(RunOutcome {
                 status,
                 stdout: out,
                 stderr: err,
                 elapsed: started.elapsed(),
             }));
+            finished_events.close();
         });
         Ok(RunHandle {
             child,
-            rx,
+            events,
             finished: false,
             stop_requested: stop,
         })
@@ -197,7 +309,7 @@ impl RunHandle {
     /// Non-blocking: all pending events.
     pub fn poll_events(&mut self) -> Vec<RunEvent> {
         let mut v = vec![];
-        while let Ok(e) = self.rx.try_recv() {
+        while let Some(e) = self.events.try_pop() {
             if matches!(e, RunEvent::Finished(_)) {
                 self.finished = true;
             }
@@ -208,11 +320,19 @@ impl RunHandle {
 
     /// Blocks until the next event (or timeout).
     pub fn wait_event(&mut self, timeout: Duration) -> Option<RunEvent> {
-        let e = self.rx.recv_timeout(timeout).ok()?;
+        let e = self.events.pop_timeout(timeout)?;
         if matches!(e, RunEvent::Finished(_)) {
             self.finished = true;
         }
         Some(e)
+    }
+
+    /// Line events dropped because the caller polled slower than the child printed.
+    ///
+    /// Only the live preview is affected: the outcome returned by `Finished` always
+    /// carries the newest [`MAX_RETAINED_LINES`] lines of both streams.
+    pub fn dropped_events(&self) -> u64 {
+        self.events.dropped()
     }
 
     /// Kills the process.
@@ -242,10 +362,10 @@ pub fn run_blocking(
 ) -> Result<RunOutcome, RunnerError> {
     let h = RunHandle::start_with_timeout(env, script, out_dir, timeout)?;
     loop {
-        match h.rx.recv() {
-            Ok(RunEvent::Finished(o)) => return Ok(o),
-            Ok(_) => {}
-            Err(_) => {
+        match h.events.pop_blocking() {
+            Some(RunEvent::Finished(o)) => return Ok(o),
+            Some(_) => {}
+            None => {
                 return Err(RunnerError::Spawn(
                     "runner thread ended unexpectedly".into(),
                 ))
@@ -288,5 +408,75 @@ mod tests {
         assert_eq!(v.len(), MAX_RETAINED_LINES);
         assert_eq!(v[0], "5");
         assert_eq!(v[v.len() - 1], (MAX_RETAINED_LINES + 4).to_string());
+    }
+
+    fn outcome() -> RunOutcome {
+        RunOutcome {
+            status: RunStatus::Succeeded,
+            stdout: vec![],
+            stderr: vec![],
+            elapsed: Duration::ZERO,
+        }
+    }
+
+    #[test]
+    fn event_queue_drops_line_events_past_the_bound() {
+        let q = EventQueue::new();
+        q.push_control(RunEvent::Started);
+        for i in 0..MAX_PENDING_EVENTS + 500 {
+            q.push_line(RunEvent::Stdout(i.to_string()));
+        }
+        // The queue never grows past the bound, so the excess is dropped and counted.
+        // `Started` already occupies one slot of the queue.
+        assert_eq!(q.dropped(), 500 + 1);
+        let mut seen = vec![];
+        while let Some(e) = q.try_pop() {
+            seen.push(e);
+        }
+        assert_eq!(seen.len(), MAX_PENDING_EVENTS);
+        assert_eq!(seen[0], RunEvent::Started);
+        assert_eq!(seen[1], RunEvent::Stdout("0".into()));
+    }
+
+    #[test]
+    fn event_queue_keeps_finished_even_when_full() {
+        let q = EventQueue::new();
+        for i in 0..MAX_PENDING_EVENTS * 2 {
+            q.push_line(RunEvent::Stderr(i.to_string()));
+        }
+        assert_eq!(q.dropped(), MAX_PENDING_EVENTS as u64);
+        q.push_control(RunEvent::Finished(outcome()));
+        let mut seen = vec![];
+        while let Some(e) = q.try_pop() {
+            seen.push(e);
+        }
+        assert_eq!(seen.len(), MAX_PENDING_EVENTS + 1);
+        assert_eq!(seen.last(), Some(&RunEvent::Finished(outcome())));
+    }
+
+    #[test]
+    fn closed_empty_queue_returns_instead_of_blocking() {
+        let q = EventQueue::new();
+        q.close();
+        assert!(q.pop_blocking().is_none());
+        assert!(q.pop_timeout(Duration::from_millis(10)).is_none());
+    }
+
+    #[test]
+    fn event_queue_wakes_a_waiter_on_push() {
+        let q = Arc::new(EventQueue::new());
+        let producer = q.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            producer.push_line(RunEvent::Stdout("late".into()));
+            producer.close();
+        });
+        assert_eq!(
+            q.pop_blocking(),
+            Some(RunEvent::Stdout("late".into())),
+            "pop_blocking must wake up when a line arrives"
+        );
+        assert!(q.pop_timeout(Duration::from_secs(1)).is_none());
+        t.join().expect("producer thread");
     }
 }
