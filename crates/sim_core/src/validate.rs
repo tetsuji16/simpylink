@@ -239,10 +239,14 @@ fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>
         }
         numbers.sort_unstable();
         let count = numbers.len() as u32;
+        // A duplicate shifts every later number, so a gap report would only describe the
+        // same root cause twice. Report the duplicates and stop for this block type.
+        if !duplicated.is_empty() {
+            continue;
+        }
         for (index, (n, sid)) in numbers.iter().enumerate() {
             let expected = index as u32 + 1;
-            // A duplicate is the root cause; the resulting gap is not reported again.
-            if *n != expected && !duplicated.contains(n) {
+            if *n != expected {
                 out.push(Diagnostic::error(
                     E_PORT_NUMBER_GAP,
                     format!("{block_type} port numbers must be 1..{count} without gaps"),

@@ -235,6 +235,22 @@ fn duplicate_port_numbers_are_reported() {
 }
 
 #[test]
+fn a_duplicate_suppresses_the_gap_it_causes() {
+    // 1,1,2: the second 1 is the duplicate; port 2 must not also be reported as a gap.
+    let model = model_with_ports("Inport", &["1", "1", "2"]);
+    let diagnostics = validate_model(&model);
+    let duplicates = diagnostics
+        .iter()
+        .filter(|d| d.code == E_DUPLICATE_PORT_NUMBER)
+        .count();
+    assert_eq!(duplicates, 1, "{diagnostics:?}");
+    assert!(
+        !diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP),
+        "{diagnostics:?}"
+    );
+}
+
+#[test]
 fn outport_number_gap_is_reported() {
     let model = model_with_ports("Outport", &["1", "3"]);
     let diagnostics = validate_model(&model);
