@@ -1,6 +1,7 @@
 //! Editing commands with inverse commands, and the Undo/Redo history.
 use crate::geom::Rect;
 use crate::ids::{BlockId, LineId};
+use crate::library::port_counts;
 use crate::model::{Block, Branch, Line, Model, Orientation, PortRef, SimConfig, System};
 use crate::path::SystemPath;
 use std::collections::BTreeSet;
@@ -90,6 +91,9 @@ pub enum EditError {
     DuplicateName(String),
     #[error("input port {0:?} is already connected")]
     InputAlreadyConnected(PortRef),
+    /// A line endpoint names a port the block does not have.
+    #[error("port {0:?} does not exist")]
+    PortNotFound(PortRef),
 }
 
 /// Menu label of a command.
@@ -173,6 +177,55 @@ fn connected_inputs(sys: &System, except: Option<LineId>) -> BTreeSet<PortRef> {
         .filter(|l| Some(l.id) != except)
         .flat_map(|l| l.destinations())
         .collect()
+}
+
+/// One endpoint of a line: the block must exist and must have that port.
+///
+/// Blocks whose port counts cannot be computed (unknown type, invalid parameter) are
+/// left to `validate_model`, which reports them as its own diagnostics.
+fn check_endpoint(sys: &System, p: PortRef, is_output: bool) -> Result<(), EditError> {
+    let block = sys
+        .block(p.block)
+        .ok_or(EditError::BlockNotFound(p.block))?;
+    let Ok(counts) = port_counts(block) else {
+        return Ok(());
+    };
+    let available = if is_output {
+        counts.outputs
+    } else {
+        counts.inputs
+    };
+    if p.port == 0 || p.port > available {
+        return Err(EditError::PortNotFound(p));
+    }
+    Ok(())
+}
+
+/// No destination input of `line` may already be driven by another line.
+/// `ignore` is the id of a line that is being replaced (its own inputs do not count).
+fn check_inputs_free(sys: &System, line: &Line, ignore: Option<LineId>) -> Result<(), EditError> {
+    let used = connected_inputs(sys, ignore);
+    for d in line.destinations() {
+        if used.contains(&d) {
+            return Err(EditError::InputAlreadyConnected(d));
+        }
+    }
+    Ok(())
+}
+
+/// Checks that every endpoint of `line` names an existing block and port of `sys`
+/// and that no destination input is already driven by another line.
+/// `ignore` is the id of a line that is being replaced (its own inputs do not count).
+fn check_line_endpoints(
+    sys: &System,
+    line: &Line,
+    ignore: Option<LineId>,
+) -> Result<(), EditError> {
+    check_endpoint(sys, line.src, true)?;
+    for d in line.destinations() {
+        check_endpoint(sys, d, false)?;
+    }
+    check_inputs_free(sys, line, ignore)
 }
 
 fn bump_ids(m: &mut Model) {
@@ -285,6 +338,16 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
                 if sys.line(l.id).is_none() {
                     return Err(EditError::LineNotFound(l.id));
                 }
+            }
+            // Check the lines against the system as it will look once restored, before
+            // touching the model: a single bad line must leave the model unchanged.
+            let mut probe = sys.clone();
+            for b in &blocks {
+                probe.insert_block_sorted(b.clone());
+            }
+            for l in &lines {
+                check_line_endpoints(&probe, l, None)?;
+                probe.insert_line_sorted(l.clone());
             }
             let inv = Command::DeleteItems {
                 path: path.clone(),
@@ -418,18 +481,18 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
             if sys.line(line.id).is_some() {
                 return Err(EditError::DuplicateLine(line.id));
             }
+            // `AddLine` keeps the checks it has always had: an out-of-range port is a
+            // parameter problem that `validate_model` reports, so a line may be drawn
+            // before the block's port count is fixed (#197 §F).
             if sys.block(line.src.block).is_none() {
                 return Err(EditError::BlockNotFound(line.src.block));
             }
-            let used = connected_inputs(sys, None);
             for d in line.destinations() {
                 if sys.block(d.block).is_none() {
                     return Err(EditError::BlockNotFound(d.block));
                 }
-                if used.contains(&d) {
-                    return Err(EditError::InputAlreadyConnected(d));
-                }
             }
+            check_inputs_free(sys, &line, None)?;
             let id = line.id;
             sys.insert_line_sorted(line);
             bump_ids(model);
@@ -447,15 +510,10 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
         }
         Command::ReplaceLine { path, line } => {
             let sys = sys_mut(model, &path)?;
-            let used = connected_inputs(sys, Some(line.id));
             if sys.line(line.id).is_none() {
                 return Err(EditError::LineNotFound(line.id));
             }
-            for d in line.destinations() {
-                if used.contains(&d) {
-                    return Err(EditError::InputAlreadyConnected(d));
-                }
-            }
+            check_line_endpoints(sys, &line, Some(line.id))?;
             let x = sys
                 .line_mut(line.id)
                 .ok_or(EditError::LineNotFound(line.id))?;
