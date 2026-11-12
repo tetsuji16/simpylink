@@ -49,11 +49,13 @@ pub fn signal_var_name(var_base: &str, port: u32, n_outputs: u32) -> String {
 }
 
 /// Log channel name ("Scope/1" or "Out1").
+///
+/// Control characters and the CSV separators `,` / `"` are replaced by `_` (#203).
 pub fn log_name(block_name: &str, port: Option<u32>) -> String {
     let clean: String = block_name
         .chars()
         .map(|c| {
-            if matches!(c, ',' | '"' | '\n' | '\r') {
+            if c.is_control() || matches!(c, ',' | '"') {
                 '_'
             } else {
                 c
@@ -64,6 +66,22 @@ pub fn log_name(block_name: &str, port: Option<u32>) -> String {
         Some(p) => format!("{clean}/{p}"),
         None => clean,
     }
+}
+
+/// Channel name of a block inside `parents` (subsystem names, outermost first).
+///
+/// Blocks at the root keep their plain name so existing result files stay readable;
+/// blocks inside a subsystem are qualified as `Parent/Child`. Two subsystems may hold
+/// a block of the same name, so the qualification is what keeps the channels distinct
+/// (#203).
+pub fn log_name_at(parents: &[String], block_name: &str, port: Option<u32>) -> String {
+    if parents.is_empty() {
+        return log_name(block_name, port);
+    }
+    let mut full = parents.join("/");
+    full.push('/');
+    full.push_str(block_name);
+    log_name(&full, port)
 }
 
 /// Script file name for a model.
@@ -100,6 +118,12 @@ mod tests {
         assert_eq!(signal_var_name("demux_4", 2, 3), "demux_4_y2");
         assert_eq!(log_name("Scope", Some(1)), "Scope/1");
         assert_eq!(log_name("a,b\"c", None), "a_b_c");
+        assert_eq!(log_name("a\tb\nc", None), "a_b_c");
+        assert_eq!(
+            log_name_at(&["A".to_string(), "Inner".to_string()], "Scope", Some(1)),
+            "A/Inner/Scope/1"
+        );
+        assert_eq!(log_name_at(&[], "Out1", None), "Out1");
         assert_eq!(script_file_name(""), "model.py");
         assert_eq!(script_file_name("My Model"), "my_model.py");
         assert_eq!(script_file_name("step_gain_scope"), "step_gain_scope.py");
