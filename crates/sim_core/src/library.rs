@@ -3,7 +3,7 @@ use crate::expr::{parse_value, Value};
 use crate::geom::{Point, Rect};
 use crate::ids::BlockId;
 use crate::model::{Block, Orientation, System};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How a parameter string is validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1068,6 +1068,29 @@ pub fn default_name(system: &System, s: &BlockSpec) -> String {
     unique_block_name(system, s.base_name)
 }
 
+/// Smallest positive port number not used by blocks of `block_type` in `sys`.
+///
+/// Port numbers of a subsystem must stay `1..=count` without gaps, so a new Inport or
+/// Outport takes the lowest free number instead of "number of blocks + 1" (#196).
+fn free_port_number(sys: &System, block_type: &str) -> u32 {
+    let used: BTreeSet<u32> = sys
+        .blocks
+        .iter()
+        .filter(|b| b.block_type == block_type)
+        .filter_map(|b| b.params.get("Port"))
+        .filter_map(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .collect();
+    let mut next = 1;
+    for n in used {
+        if n > next {
+            break;
+        }
+        next = next.saturating_add(1);
+    }
+    next
+}
+
 /// New block with default parameters at `top_left`.
 pub fn new_block(
     system: &System,
@@ -1091,12 +1114,7 @@ pub fn new_block(
         system: None,
     };
     if block_type == "Inport" || block_type == "Outport" {
-        let n = system
-            .blocks
-            .iter()
-            .filter(|x| x.block_type == block_type)
-            .count()
-            + 1;
+        let n = free_port_number(system, block_type);
         b.params.insert("Port".into(), n.to_string());
     }
     Ok(b)

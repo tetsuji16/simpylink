@@ -197,3 +197,90 @@ fn dangling_line_and_unconnected_scope_are_reported() {
         .iter()
         .any(|d| { d.code == W_UNCONNECTED_INPUT && d.location.block == Some(BlockId(3)) }));
 }
+
+/// Model whose root system holds only `block_type` blocks with the given `Port` values.
+fn model_with_ports(block_type: &str, ports: &[&str]) -> Model {
+    let mut model = Model::new("ports");
+    model.config.stop_time = 1.0;
+    for (i, raw) in ports.iter().enumerate() {
+        let mut b = new_block(
+            &model.root,
+            block_type,
+            BlockId(i as u32 + 1),
+            Point::new(0.0, 0.0),
+        )
+        .unwrap();
+        b.params.insert("Port".into(), (*raw).to_string());
+        model.root.insert_block_sorted(b);
+    }
+    model
+}
+
+#[test]
+fn duplicate_port_numbers_are_reported() {
+    let model = model_with_ports("Inport", &["1", "1"]);
+    let diagnostics = validate_model(&model);
+    let duplicates: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == E_DUPLICATE_PORT_NUMBER)
+        .collect();
+    assert_eq!(duplicates.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        duplicates[0].message,
+        "port number 1 is used by more than one Inport"
+    );
+    assert_eq!(duplicates[0].location.block, Some(BlockId(2)));
+    // The duplicate is the root cause; the resulting gap is not reported as well.
+    assert!(!diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
+}
+
+#[test]
+fn outport_number_gap_is_reported() {
+    let model = model_with_ports("Outport", &["1", "3"]);
+    let diagnostics = validate_model(&model);
+    let gaps: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.code == E_PORT_NUMBER_GAP)
+        .collect();
+    assert_eq!(gaps.len(), 1, "{diagnostics:?}");
+    assert_eq!(
+        gaps[0].message,
+        "Outport port numbers must be 1..2 without gaps"
+    );
+    assert_eq!(gaps[0].location.block, Some(BlockId(2)));
+    assert!(!diagnostics
+        .iter()
+        .any(|d| d.code == E_DUPLICATE_PORT_NUMBER));
+}
+
+#[test]
+fn sequential_port_numbers_are_accepted() {
+    for block_type in ["Inport", "Outport"] {
+        let model = model_with_ports(block_type, &["1", "2", "3"]);
+        let diagnostics = validate_model(&model);
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| { d.code == E_DUPLICATE_PORT_NUMBER || d.code == E_PORT_NUMBER_GAP }),
+            "{block_type}: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn invalid_port_numbers_are_only_invalid_params() {
+    for raw in ["0", "abc"] {
+        let model = model_with_ports("Inport", &[raw]);
+        let diagnostics = validate_model(&model);
+        assert!(
+            diagnostics.iter().any(|d| d.code == E_INVALID_PARAM),
+            "{raw}: {diagnostics:?}"
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| { d.code == E_DUPLICATE_PORT_NUMBER || d.code == E_PORT_NUMBER_GAP }),
+            "{raw}: {diagnostics:?}"
+        );
+    }
+}
