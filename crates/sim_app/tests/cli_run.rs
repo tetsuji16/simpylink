@@ -106,3 +106,40 @@ fn check_python_reports_missing_interpreter() {
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("error[E_PYTHON]:"), "{stderr}");
 }
+
+#[test]
+fn timeout_flag_is_accepted() {
+    // §207-E: a generous timeout must not change the outcome of a normal run.
+    let dir = tempfile::tempdir().unwrap();
+    let result = bin()
+        .arg("run")
+        .arg(fixture("step_gain_scope"))
+        .arg("--out-dir")
+        .arg(dir.path())
+        .args(["--timeout", "60"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[test]
+fn invalid_timeout_is_a_usage_error() {
+    // §207-J: `--timeout 0` and `--timeout abc` are rejected by clap (exit code 2).
+    for bad in ["0", "-1", "abc", "inf", "nan"] {
+        let result = bin()
+            .args(["run", "m.json", "--out-dir", "r", "--timeout", bad])
+            .output()
+            .unwrap();
+        assert_eq!(result.status.code(), Some(2), "--timeout {bad}");
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(
+            !stderr.trim().is_empty(),
+            "--timeout {bad} must explain itself"
+        );
+    }
+}

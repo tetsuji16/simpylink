@@ -111,6 +111,15 @@ impl RunHandle {
         let script = std::path::absolute(script)?;
         let out_dir = std::path::absolute(out_dir)?;
         std::fs::create_dir_all(&out_dir)?;
+        // A previous run may have left its results here. The child is not guaranteed to
+        // overwrite them, and a failed run must never be read as a successful one (#207).
+        for name in [crate::results::RESULTS_CSV, crate::results::RESULTS_META] {
+            match std::fs::remove_file(out_dir.join(name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(RunnerError::Io(e)),
+            }
+        }
         let mut cmd = Command::new(&env.program);
         cmd.args(&env.prefix_args)
             .arg("-u")
