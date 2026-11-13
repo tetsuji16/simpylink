@@ -223,9 +223,7 @@ fn unknown_entity(s: &str) -> Option<String> {
     let mut rest = s;
     while let Some(i) = rest.find('&') {
         let after = &rest[i + 1..];
-        let Some(j) = after.find(';') else {
-            return None;
-        };
+        let j = after.find(';')?;
         let name = &after[..j];
         if entity(name).is_none() {
             return Some(format!("&{name};"));
