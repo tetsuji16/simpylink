@@ -107,7 +107,10 @@ fn editing_after_a_run_marks_results_stale() {
     st.results_revision = Some(st.revision);
     assert!(!st.results_are_stale());
     move_gain(&mut st);
-    assert!(st.results_are_stale(), "moving a block must mark results stale");
+    assert!(
+        st.results_are_stale(),
+        "moving a block must mark results stale"
+    );
     assert!(st.results.is_some(), "results must not be cleared");
 }
 
@@ -188,6 +191,9 @@ fn run_records_revision_and_rerun_clears_stale() {
     move_gain(&mut st);
     assert!(st.results_are_stale());
     run_to_completion(&mut st);
-    assert!(!st.results_are_stale(), "a new run must clear the stale flag");
+    assert!(
+        !st.results_are_stale(),
+        "a new run must clear the stale flag"
+    );
     assert_eq!(st.results_revision, Some(st.revision));
 }
