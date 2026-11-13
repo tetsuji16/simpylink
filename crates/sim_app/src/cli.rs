@@ -64,14 +64,16 @@ pub const EXIT_IO_ERROR: i32 = 4;
 /// Exit code of a broken Python environment.
 pub const EXIT_PYTHON_ENV: i32 = 5;
 
-/// Parses `--timeout`: a positive, finite number of seconds.
+/// Parses `--timeout`: a positive, finite number of seconds that fits a `Duration`.
 fn parse_timeout(raw: &str) -> Result<f64, String> {
-    match raw.trim().parse::<f64>() {
-        Ok(s) if s.is_finite() && s > 0.0 => Ok(s),
-        _ => Err(format!(
-            "timeout must be a positive number of seconds, got '{raw}'"
-        )),
+    let bad = || format!("timeout must be a positive number of seconds, got '{raw}'");
+    let secs = raw.trim().parse::<f64>().map_err(|_| bad())?;
+    if !secs.is_finite() || secs <= 0.0 {
+        return Err(bad());
     }
+    // `Duration::from_secs_f64` panics on overflow, so reject an unusable value here.
+    std::time::Duration::try_from_secs_f64(secs).map_err(|_| bad())?;
+    Ok(secs)
 }
 
 fn build(model_path: &Path) -> Result<(Model, sim_codegen_py::GeneratedCode), i32> {
@@ -319,5 +321,7 @@ mod tests {
         assert!(parse_timeout("abc").is_err());
         assert!(parse_timeout("inf").is_err());
         assert!(parse_timeout("nan").is_err());
+        // Finite and positive, but too large for a `Duration`.
+        assert!(parse_timeout("1e300").is_err());
     }
 }

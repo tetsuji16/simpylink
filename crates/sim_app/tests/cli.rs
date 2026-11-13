@@ -79,7 +79,7 @@ fn timeout_argument() {
             timeout: Some(1.5)
         })
     );
-    for bad in ["0", "-1", "abc", "inf", "nan"] {
+    for bad in ["0", "-1", "abc", "inf", "nan", "1e300"] {
         assert!(
             Cli::try_parse_from([
                 "simpylink",

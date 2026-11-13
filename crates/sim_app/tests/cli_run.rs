@@ -130,7 +130,7 @@ fn timeout_flag_is_accepted() {
 #[test]
 fn invalid_timeout_is_a_usage_error() {
     // §207-J: `--timeout 0` and `--timeout abc` are rejected by clap (exit code 2).
-    for bad in ["0", "-1", "abc", "inf", "nan"] {
+    for bad in ["0", "-1", "abc", "inf", "nan", "1e300"] {
         let result = bin()
             .args(["run", "m.json", "--out-dir", "r", "--timeout", bad])
             .output()
