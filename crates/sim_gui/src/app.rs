@@ -721,6 +721,7 @@ impl eframe::App for SimpylinkApp {
                 .results
                 .as_ref()
                 .and_then(|r| r.time.last().copied()),
+            stale: self.state.results_are_stale(),
         };
         self.scope_views
             .retain(|k, _| self.state.open_scopes.contains(k));
