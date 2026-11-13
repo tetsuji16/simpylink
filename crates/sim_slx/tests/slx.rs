@@ -90,6 +90,44 @@ fn xml_lossless() {
     assert!(parse_xml("t", b"").unwrap().root().is_none());
 }
 
+#[test]
+fn attribute_whitespace_survives_a_round_trip() {
+    // Attribute-value normalization would turn a literal \n, \r or \t into a space.
+    let mut doc = XmlDocument::default();
+    let mut e = XmlElement::new("P");
+    let value = "a\nb\tc\rd";
+    e.set_attr("Name", value);
+    doc.nodes.push(XmlNode::Element(e));
+    let bytes = write_xml(&doc);
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(text.contains("&#10;"), "{text}");
+    assert!(text.contains("&#13;"), "{text}");
+    assert!(text.contains("&#9;"), "{text}");
+    let back = parse_xml("p.xml", &bytes).unwrap();
+    assert_eq!(back.root().unwrap().attr("Name").as_deref(), Some(value));
+}
+
+#[test]
+fn unknown_entity_is_an_error_instead_of_an_empty_string() {
+    match parse_xml("p.xml", br#"<P Name="&foo;"/>"#) {
+        Err(SlxError::Xml { part, message }) => {
+            assert_eq!(part, "p.xml");
+            assert_eq!(message, "unknown entity '&foo;'");
+        }
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+    match parse_xml("p.xml", b"<P>&foo;</P>") {
+        Err(SlxError::Xml { message, .. }) => assert_eq!(message, "unknown entity '&foo;'"),
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+    // The entities XML defines still decode.
+    let back = parse_xml("p.xml", br#"<P Name="a &amp; b &#10; c"/>"#).unwrap();
+    assert_eq!(
+        back.root().unwrap().attr("Name").as_deref(),
+        Some("a & b \n c")
+    );
+}
+
 fn connections(m: &sim_core::model::Model) -> BTreeSet<(u32, u32, u32, u32)> {
     fn rec(s: &sim_core::model::System, out: &mut BTreeSet<(u32, u32, u32, u32)>) {
         for l in &s.lines {
