@@ -192,30 +192,43 @@ fn already_exists(path: &Path) -> SlxError {
 
 /// Creates `path` exclusively and writes `bytes`, removing a partial file on failure.
 fn write_new(bytes: &[u8], path: &Path) -> Result<(), SlxError> {
-    let written = (|| -> std::io::Result<()> {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
-        f.write_all(bytes)?;
-        f.sync_all()
-    })();
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                already_exists(path)
+            } else {
+                SlxError::Io(e)
+            }
+        })?;
+    let written = f.write_all(bytes).and_then(|()| f.sync_all());
+    drop(f);
     match written {
         Ok(()) => Ok(()),
         Err(e) => {
-            // The handle is closed by now, so the partial file can be removed on Windows.
-            // Failing to clean up is not reported separately: `e` already explains the
-            // write that broke.
-            let _removed = std::fs::remove_file(path);
+            std::fs::remove_file(path).map_err(|cleanup| {
+                SlxError::Io(std::io::Error::new(
+                    cleanup.kind(),
+                    format!("write failed: {e}; could not remove partial file: {cleanup}"),
+                ))
+            })?;
             Err(SlxError::Io(e))
         }
     }
 }
 
 /// Writes `bytes` to `tmp`, then gives them the final name without replacing anything.
-fn write_through_temp(bytes: &[u8], tmp: &Path, path: &Path) -> Result<(), SlxError> {
-    {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-    }
+fn write_through_temp(
+    bytes: &[u8],
+    mut f: std::fs::File,
+    tmp: &Path,
+    path: &Path,
+) -> Result<(), SlxError> {
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
     match std::fs::hard_link(tmp, path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(already_exists(path)),
@@ -233,12 +246,19 @@ fn write_through_temp(bytes: &[u8], tmp: &Path, path: &Path) -> Result<(), SlxEr
 pub fn write_package_file(pkg: &OpcPackage, path: &Path) -> Result<(), SlxError> {
     let bytes = write_package(pkg)?;
     let tmp = temp_path(path)?;
-    let result = write_through_temp(&bytes, &tmp, path);
+    let f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let result = write_through_temp(&bytes, f, &tmp, path);
     // The temporary file must not survive, whether the write worked or not.
     let cleanup = std::fs::remove_file(&tmp);
-    result?;
-    cleanup?;
-    Ok(())
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) => Err(e),
+        (Ok(()), Err(e)) => Err(e.into()),
+        (Err(e), Err(cleanup)) => Err(SlxError::Io(std::io::Error::new(
+            cleanup.kind(),
+            format!("{e}; could not remove temporary file: {cleanup}"),
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +354,29 @@ mod tests {
         }
         assert_eq!(std::fs::read(&path).unwrap(), b"original");
         assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn fallback_never_deletes_an_existing_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("existing.slx");
+        std::fs::write(&path, b"original").unwrap();
+        assert!(
+            matches!(write_new(b"new", &path), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(path).unwrap(), b"original");
+    }
+
+    #[test]
+    fn existing_temporary_file_is_not_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("new.slx");
+        let tmp = temp_path(&path).unwrap();
+        std::fs::write(&tmp, b"other writer").unwrap();
+        assert!(
+            matches!(write_package_file(&sample(), &path), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(tmp).unwrap(), b"other writer");
     }
 
     #[test]
