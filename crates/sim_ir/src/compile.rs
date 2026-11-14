@@ -1,7 +1,7 @@
 //! Model → SimIr compiler.
 use crate::graph::{allocate_signals, build_connectivity, flat_blocks};
 use crate::lower::lower_block_in;
-use crate::naming::{log_name, var_base};
+use crate::naming::{log_name_at, var_base};
 use crate::sample_time::{discrete_rates, rate_index, resolve_sample_times, StInput};
 use crate::sort::{df_edges, loop_message, sorted_order};
 use crate::types::*;
@@ -9,9 +9,10 @@ use crate::width::propagate_widths;
 use sim_core::diag::{codes::*, has_errors, Diagnostic, Location, Severity};
 use sim_core::ids::BlockId;
 use sim_core::model::{Model, PortRef, SolverKind};
+use sim_core::path::SystemPath;
 use sim_core::validate::validate_model;
 use sim_core::workspace::Workspace;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Successful compilation.
 #[derive(Debug, Clone, PartialEq)]
@@ -407,13 +408,25 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
     bps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     // logs
     let by_sid: BTreeMap<BlockId, &IrBlock> = blocks.iter().map(|b| (b.sid, b)).collect();
+    // Block names are only unique inside one system, so a channel inside a subsystem
+    // is qualified with the subsystem path (#203).
+    let parents: BTreeMap<BlockId, Vec<String>> = flat
+        .iter()
+        .map(|fb| (fb.block.sid, subsystem_names(model, &fb.path)))
+        .collect();
+    let parent_names = |sid: &BlockId| -> &[String] {
+        match parents.get(sid) {
+            Some(p) => p,
+            None => &[],
+        }
+    };
     let mut logs = vec![];
     for sid in &nodes {
         let b = by_sid[sid];
         if b.kind == IrBlockKind::Scope {
             for (i, s) in b.inputs.iter().enumerate() {
                 logs.push(IrLog {
-                    name: log_name(&b.name, Some(i as u32 + 1)),
+                    name: log_name_at(parent_names(sid), &b.name, Some(i as u32 + 1)),
                     block_sid: *sid,
                     port: i as u32 + 1,
                     signal: *s,
@@ -435,12 +448,13 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
     for (_, sid) in outs {
         let b = by_sid[&sid];
         logs.push(IrLog {
-            name: log_name(&b.name, None),
+            name: log_name_at(parent_names(&sid), &b.name, None),
             block_sid: sid,
             port: 1,
             signal: b.inputs.first().copied().flatten(),
         });
     }
+    make_channel_names_unique(&mut logs, &mut diags);
     let ir = SimIr {
         model_name: model.name.clone(),
         config: IrConfig {
@@ -465,4 +479,59 @@ pub fn compile(model: &Model) -> Result<CompiledModel, CompileFailure> {
         ir,
         diagnostics: diags,
     })
+}
+
+/// Names of the subsystems that contain `path`, outermost first.
+fn subsystem_names(model: &Model, path: &SystemPath) -> Vec<String> {
+    let mut names = vec![];
+    let mut prefix = SystemPath::root();
+    for sid in &path.0 {
+        let Some(block) = model.system(&prefix).and_then(|s| s.block(*sid)) else {
+            break;
+        };
+        names.push(block.name.clone());
+        prefix = prefix.child(*sid);
+    }
+    names
+}
+
+/// Makes every channel name unique by appending `_2`, `_3`, ... in ascending SID order.
+///
+/// Path qualification already separates `A/Scope` from `B/Scope`, but a block may still
+/// be named `A/B`, and a duplicated column in `results.csv` would make one channel
+/// unreadable (#203).
+fn make_channel_names_unique(logs: &mut [IrLog], diags: &mut Vec<Diagnostic>) {
+    let mut order: Vec<usize> = (0..logs.len()).collect();
+    order.sort_by_key(|&i| (logs[i].block_sid.0, logs[i].port));
+    let mut used = BTreeSet::new();
+    let mut renames: Vec<Option<String>> = vec![None; logs.len()];
+    for i in order {
+        let base = logs[i].name.clone();
+        let mut name = base.clone();
+        let mut suffix = 1;
+        while !used.insert(name.clone()) {
+            suffix += 1;
+            name = format!("{base}_{suffix}");
+        }
+        if name != base {
+            renames[i] = Some(name);
+        }
+    }
+    for (log, rename) in logs.iter_mut().zip(renames) {
+        if let Some(name) = rename {
+            log.name = name;
+        }
+    }
+    // Unreachable by construction; checked so that a later change to the naming rules
+    // cannot silently ship a model with two identical columns.
+    let mut seen = BTreeSet::new();
+    for log in logs.iter() {
+        if !seen.insert(log.name.clone()) {
+            diags.push(Diagnostic::error(
+                E_DUPLICATE_CHANNEL,
+                format!("log channel '{}' is not unique", log.name),
+                Location::default(),
+            ));
+        }
+    }
 }
