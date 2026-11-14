@@ -65,8 +65,10 @@ pub(crate) fn kill_tree(child: &mut Child) {
     }
     #[cfg(unix)]
     {
-        let mut cmd = Command::new("kill");
-        cmd.args(["-KILL", &format!("-{pid}")])
+        // The shell builtin handles a negative pid (a process group) on every
+        // POSIX shell, while the `kill` binary does not always do so.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &format!("kill -s KILL -- -{pid}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());

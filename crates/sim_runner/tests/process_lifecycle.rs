@@ -4,7 +4,6 @@
 //! `stop()` or of dropping the handle. These tests need Python 3.10+, like the
 //! other runner tests.
 use sim_runner::*;
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn env() -> PythonEnv {
@@ -17,28 +16,72 @@ fn script(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
     p
 }
 
-/// True while a process with `pid` exists.
+/// Process state letter from `/proc/<pid>/stat` on Linux (`None` elsewhere).
+fn proc_state(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // The command name may contain spaces and parentheses, so read the state
+        // from the fields after the last ')'.
+        let (_, rest) = stat.rsplit_once(')')?;
+        rest.split_whitespace().next().map(str::to_string)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// Process group id from `/proc/<pid>/stat` on Linux (`None` elsewhere).
+fn proc_pgid(pid: u32) -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, rest) = stat.rsplit_once(')')?;
+        // state, ppid, pgrp
+        rest.split_whitespace().nth(2)?.parse().ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// True while a process with `pid` is still running.
+///
+/// A zombie counts as dead: it has exited, and only its exit status is uncollected.
+/// On Linux the reaping parent can be init or the CI runner rather than this test,
+/// so the zombie may stay visible for a while after the kill.
 fn pid_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        match proc_state(pid) {
+            Some(state) => state != "Z" && state != "X",
+            None => false,
+        }
+    }
     #[cfg(windows)]
     {
         let filter = format!("PID eq {pid}");
-        let out = Command::new("tasklist")
+        let out = std::process::Command::new("tasklist")
             .args(["/FI", &filter, "/NH", "/FO", "CSV"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .output();
         match out {
             Ok(o) => String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")),
             Err(_) => false,
         }
     }
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "linux")))]
     {
-        Command::new("kill")
+        std::process::Command::new("kill")
             .args(["-0", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .status()
             .map(|s| s.success())
             .unwrap_or(false)
@@ -103,7 +146,8 @@ fn dropping_the_handle_kills_the_child() {
     drop(h);
     assert!(
         wait_until_dead(pid, Duration::from_secs(3)),
-        "child {pid} survived the drop"
+        "child {pid} survived the drop (state: {:?})",
+        proc_state(pid)
     );
     assert!(
         started.elapsed() < Duration::from_secs(3),
@@ -137,16 +181,19 @@ fn stop_kills_the_child_and_its_grandchild() {
         "grandchild {grandchild} is not running"
     );
     assert!(pid_alive(child), "child {child} is not running");
+    let groups = (proc_pgid(child), proc_pgid(grandchild));
     let started = Instant::now();
     h.stop();
     h.stop();
     assert!(
         wait_until_dead(child, Duration::from_secs(3)),
-        "child {child} survived stop()"
+        "child {child} survived stop() (state: {:?}, pgids: {groups:?})",
+        proc_state(child)
     );
     assert!(
         wait_until_dead(grandchild, Duration::from_secs(3)),
-        "grandchild {grandchild} survived stop()"
+        "grandchild {grandchild} survived stop() (state: {:?}, pgids: {groups:?})",
+        proc_state(grandchild)
     );
     let outcome = next_outcome(&mut h, Duration::from_secs(10));
     assert_eq!(outcome.status, RunStatus::Stopped);
