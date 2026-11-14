@@ -15,7 +15,71 @@ pub fn validate_model(model: &Model) -> Vec<Diagnostic> {
     let mut seen_lines = BTreeSet::new();
     check_system(&model.root, &SystemPath::root(), &mut seen_lines, &mut out);
     check_tags(model, &mut out);
+    for loc in non_finite_geometry(model) {
+        out.push(Diagnostic::error(
+            E_NON_FINITE_GEOMETRY,
+            "block position and line points must be finite",
+            loc,
+        ));
+    }
     out
+}
+
+/// True when `s` holds a control character or a Unicode line/paragraph separator.
+///
+/// Such a name cannot be written to JSON, a `.m` script or generated Python without
+/// escaping, so it is rejected at the model level (#198).
+fn has_control_chars(s: &str) -> bool {
+    s.chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+}
+
+fn finite_point(p: &crate::geom::Point) -> bool {
+    p.x.is_finite() && p.y.is_finite()
+}
+
+fn finite_branches(bs: &[Branch]) -> bool {
+    bs.iter()
+        .all(|b| b.points.iter().all(finite_point) && finite_branches(&b.branches))
+}
+
+fn finite_line(l: &Line) -> bool {
+    l.points.iter().all(finite_point) && finite_branches(&l.branches)
+}
+
+/// Locations of blocks and lines whose geometry is NaN or ±Inf.
+///
+/// `serde_json` writes those as `null`, so a model saved with them cannot be loaded
+/// again; they are reported here and refused by `save_to_path` (#198).
+fn non_finite_geometry(model: &Model) -> Vec<Location> {
+    fn walk(sys: &System, path: &SystemPath, out: &mut Vec<Location>) {
+        for b in &sys.blocks {
+            let r = &b.position;
+            let finite = r.left.is_finite()
+                && r.top.is_finite()
+                && r.right.is_finite()
+                && r.bottom.is_finite();
+            if !finite {
+                out.push(Location::block(path, b.sid));
+            }
+            if let Some(c) = &b.system {
+                walk(c, &path.child(b.sid), out);
+            }
+        }
+        for l in &sys.lines {
+            if !finite_line(l) {
+                out.push(Location::line(path, l.id));
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(&model.root, &SystemPath::root(), &mut out);
+    out
+}
+
+/// True when any block position or line point is NaN or ±Inf.
+pub fn has_non_finite_geometry(model: &Model) -> bool {
+    !non_finite_geometry(model).is_empty()
 }
 
 fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
@@ -35,6 +99,17 @@ fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
     }
     let mut blocks = Vec::new();
     collect(&model.root, &SystemPath::root(), &mut blocks);
+    for (path, b) in &blocks {
+        if let Some(tag) = b.params.get("GotoTag") {
+            if has_control_chars(tag) {
+                out.push(Diagnostic::error(
+                    E_INVALID_NAME,
+                    "name must not contain control characters",
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+    }
     let mut local = BTreeSet::new();
     let mut global = BTreeSet::new();
     let mut markers = BTreeSet::new();
@@ -268,6 +343,19 @@ fn check_system(
                 loc.clone(),
             ));
         }
+        if b.name.is_empty() {
+            out.push(Diagnostic::error(
+                E_INVALID_NAME,
+                "name must not be empty",
+                loc.clone(),
+            ));
+        } else if has_control_chars(&b.name) {
+            out.push(Diagnostic::error(
+                E_INVALID_NAME,
+                "name must not contain control characters",
+                loc.clone(),
+            ));
+        }
         let Some(s) = spec(&b.block_type) else {
             out.push(Diagnostic::error(
                 E_UNKNOWN_BLOCK_TYPE,
@@ -391,6 +479,13 @@ fn check_line(
     out: &mut Vec<Diagnostic>,
 ) {
     let loc = Location::line(path, l.id);
+    if has_control_chars(&l.name) {
+        out.push(Diagnostic::error(
+            E_INVALID_NAME,
+            "name must not contain control characters",
+            loc.clone(),
+        ));
+    }
     match sys.block(l.src.block) {
         None => out.push(Diagnostic::error(
             E_LINE_SRC_MISSING,
