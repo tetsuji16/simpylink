@@ -1114,15 +1114,18 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
     // Parts the importer never reads are checked too: one that exists but is not
     // well-formed XML means the package is damaged, and the user should hear about it.
     for part in &pkg.parts {
-        let already_checked = part.name == BD
-            || part.name == ROOT_SYS
-            || part.name == "[Content_Types].xml"
-            || part.name.starts_with("simulink/");
-        if already_checked || !part.name.ends_with(".xml") {
+        if !part.name.ends_with(".xml") {
             continue;
         }
         if let Err(e) = parse_xml(&part.name, &part.data) {
-            part_warnings.push(format!("{}: could not be parsed ({e}); ignored", part.name));
+            let prefix = format!("{}: could not be parsed (", part.name);
+            let already_reported = part_warnings
+                .iter()
+                .chain(r.report.warnings.iter())
+                .any(|warning| warning.starts_with(&prefix));
+            if !already_reported {
+                part_warnings.push(format!("{}: could not be parsed ({e}); ignored", part.name));
+            }
         }
     }
     r.report.warnings.extend(part_warnings);

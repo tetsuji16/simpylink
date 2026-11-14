@@ -686,6 +686,27 @@ fn a_broken_optional_part_becomes_a_warning() {
 }
 
 #[test]
+fn a_broken_unread_simulink_xml_part_becomes_a_warning() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Gain">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/unused/extra.xml", b"<a><b></a>"),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.blocks.len(), 1);
+    let hits: Vec<&String> = imp
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("simulink/unused/extra.xml"))
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", imp.report.warnings);
+    assert!(hits[0].contains("could not be parsed"), "{hits:?}");
+    assert!(hits[0].contains("ignored"), "{hits:?}");
+}
+
+#[test]
 fn a_position_that_is_not_a_number_is_reported_and_defaulted() {
     let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, x, 30, 40]</P><P Name="Gain">2</P></Block></System>"#;
     let z = make_zip(&[
