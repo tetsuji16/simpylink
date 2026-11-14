@@ -3,6 +3,25 @@ use crate::types::*;
 use serde::Deserialize;
 use std::path::Path;
 
+/// Name of the results table written by the generated script.
+pub const RESULTS_CSV: &str = "results.csv";
+/// Name of the results metadata written by the generated script.
+pub const RESULTS_META: &str = "results.meta.json";
+
+/// Reads one result file, telling "not written" apart from "cannot be read" (#207).
+fn read_result_file(path: &Path, name: &str) -> Result<String, ResultsError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(ResultsError::Missing(name.into()))
+        }
+        Err(e) => Err(ResultsError::Io {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        }),
+    }
+}
+
 /// results.meta.json.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ResultsMeta {
@@ -88,8 +107,7 @@ pub fn parse_csv(text: &str) -> Result<(Vec<String>, Vec<Vec<f64>>), ResultsErro
 
 /// Loads and validates the result files in `out_dir`.
 pub fn load_results(out_dir: &Path) -> Result<SimResults, ResultsError> {
-    let meta_text = std::fs::read_to_string(out_dir.join("results.meta.json"))
-        .map_err(|_| ResultsError::Missing("results.meta.json".into()))?;
+    let meta_text = read_result_file(&out_dir.join(RESULTS_META), RESULTS_META)?;
     let meta = parse_meta(&meta_text)?;
     if meta.status == "error" {
         return Err(ResultsError::Reported(
@@ -99,8 +117,7 @@ pub fn load_results(out_dir: &Path) -> Result<SimResults, ResultsError> {
     if meta.status != "ok" {
         return Err(ResultsError::Meta("unknown status".into()));
     }
-    let csv = std::fs::read_to_string(out_dir.join("results.csv"))
-        .map_err(|_| ResultsError::Missing("results.csv".into()))?;
+    let csv = read_result_file(&out_dir.join(RESULTS_CSV), RESULTS_CSV)?;
     let (header, rows) = parse_csv(&csv)?;
     if header.first().map(String::as_str) != Some("time") {
         return Err(ResultsError::Csv {

@@ -56,6 +56,29 @@ fn missing_meta_file_is_reported() {
 }
 
 #[test]
+fn missing_csv_file_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("results.meta.json"), META_OK).unwrap();
+    assert!(matches!(
+        load_results(dir.path()),
+        Err(ResultsError::Missing(name)) if name == "results.csv"
+    ));
+}
+
+#[test]
+fn unreadable_meta_file_is_an_io_error_not_missing() {
+    // The file exists but cannot be decoded: that is not "the run wrote nothing" (#207).
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("results.meta.json"), [0xff, 0xfe, 0xfd]).unwrap();
+    match load_results(dir.path()) {
+        Err(ResultsError::Io { path, .. }) => {
+            assert!(path.ends_with("results.meta.json"), "{path}");
+        }
+        other => panic!("expected ResultsError::Io, got {other:?}"),
+    }
+}
+
+#[test]
 fn reported_simulation_error_is_returned() {
     let meta = META_OK.replace(
         "\"ok\",\"error\":null",

@@ -97,6 +97,9 @@ pub enum RunnerError {
 pub enum ResultsError {
     #[error("results file missing: {0}")]
     Missing(String),
+    /// The file exists but cannot be read (permissions, a directory, ...).
+    #[error("cannot read {path}: {message}")]
+    Io { path: String, message: String },
     #[error("invalid results.meta.json: {0}")]
     Meta(String),
     #[error("invalid results.csv at line {line}: {message}")]
