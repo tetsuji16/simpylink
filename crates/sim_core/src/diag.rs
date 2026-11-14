@@ -136,6 +136,10 @@ pub mod codes {
     pub const W_ATOMIC_AS_VIRTUAL: &str = "W_ATOMIC_AS_VIRTUAL";
     /// Two log channels ended up with the same name (#203).
     pub const E_DUPLICATE_CHANNEL: &str = "E_DUPLICATE_CHANNEL";
+    /// A block, line or Goto tag name is empty or contains control characters (#198).
+    pub const E_INVALID_NAME: &str = "E_INVALID_NAME";
+    /// A block position or line point is NaN or ±Inf (#198).
+    pub const E_NON_FINITE_GEOMETRY: &str = "E_NON_FINITE_GEOMETRY";
     /// Two Inports (or two Outports) of one system use the same `Port` number (#196).
     pub const E_DUPLICATE_PORT_NUMBER: &str = "E_DUPLICATE_PORT_NUMBER";
     /// Inport (or Outport) `Port` numbers are not `1..=count` without gaps (#196).

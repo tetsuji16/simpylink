@@ -116,15 +116,26 @@ pub fn read_package_with_limits(bytes: &[u8], limits: &OpcLimits) -> Result<OpcP
             continue;
         }
         let mut data = vec![];
+        // Never read more than this part may add to the package: a small total limit
+        // must not be preceded by a full `max_part_bytes` allocation.
+        let remaining_total = limits.max_total_bytes.saturating_sub(total);
+        let cap = limits.max_part_bytes.min(remaining_total);
         // Read one byte more than allowed so that "exactly at the limit" still passes.
         let read = (&mut f)
-            .take(limits.max_part_bytes.saturating_add(1))
+            .take(cap.saturating_add(1))
             .read_to_end(&mut data)? as u64;
-        if read > limits.max_part_bytes {
-            return Err(SlxError::Package(format!(
-                "part '{name}' is larger than {} bytes",
-                limits.max_part_bytes
-            )));
+        if read > cap {
+            return Err(SlxError::Package(if read > limits.max_part_bytes {
+                format!(
+                    "part '{name}' is larger than {} bytes",
+                    limits.max_part_bytes
+                )
+            } else {
+                format!(
+                    "package is larger than {} bytes when unpacked",
+                    limits.max_total_bytes
+                )
+            }));
         }
         total = total.saturating_add(read);
         if total > limits.max_total_bytes {
@@ -227,5 +238,50 @@ mod tests {
             "package is larger than 207 bytes when unpacked"
         );
         assert!(read_package(&bytes).is_ok());
+    }
+
+    #[test]
+    fn a_small_total_limit_wins_over_a_large_part_limit() {
+        // 8 bytes of content types + 100 + 100.
+        let bytes = package(&[("a.xml", 100), ("b.xml", 100)]);
+        let lim = |max_parts, max_part_bytes, max_total_bytes| OpcLimits {
+            max_parts,
+            max_part_bytes,
+            max_total_bytes,
+        };
+        // The part limit would allow a.xml, but only 42 bytes are left in the package.
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 1000, 50))),
+            "package is larger than 50 bytes when unpacked"
+        );
+        // Earlier parts may exhaust the total so that the next part is rejected by the
+        // total even though it is smaller than the part limit.
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 100, 110))),
+            "package is larger than 110 bytes when unpacked"
+        );
+    }
+
+    #[test]
+    fn exact_limits_are_accepted() {
+        let bytes = package(&[("a.xml", 100), ("b.xml", 100)]);
+        let lim = |max_parts, max_part_bytes, max_total_bytes| OpcLimits {
+            max_parts,
+            max_part_bytes,
+            max_total_bytes,
+        };
+        // 208 bytes in total, one part of exactly 100 bytes.
+        assert!(read_package_with_limits(&bytes, &lim(3, 100, 208)).is_ok());
+        // One byte less in total is not enough for the last part.
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 100, 207))),
+            "package is larger than 207 bytes when unpacked"
+        );
+        // A part limit exactly at the part size is still accepted.
+        assert!(read_package_with_limits(&bytes, &lim(3, 100, 1 << 20)).is_ok());
+        assert_eq!(
+            message(read_package_with_limits(&bytes, &lim(3, 99, 1 << 20))),
+            "part 'a.xml' is larger than 99 bytes"
+        );
     }
 }
