@@ -5,7 +5,7 @@ use sim_core::edit::*;
 use sim_core::geom::{Point, Rect};
 use sim_core::ids::{BlockId, LineId};
 use sim_core::json::from_json_str;
-use sim_core::library::new_block;
+use sim_core::library::{new_block, port_counts, PortCounts, OPAQUE_INPUTS, OPAQUE_OUTPUTS};
 use sim_core::model::*;
 use sim_core::path::SystemPath;
 use sim_core::validate::validate_model;
@@ -29,6 +29,71 @@ fn pr(b: u32, p: u32) -> PortRef {
         block: BlockId(b),
         port: p,
     }
+}
+
+#[test]
+fn opaque_block_port_counts_are_used_for_validation() {
+    let mut block = Block {
+        sid: BlockId(1),
+        block_type: "UnknownOpaqueBlock".into(),
+        name: "T".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [(OPAQUE_INPUTS.to_string(), "1".to_string())]
+            .into_iter()
+            .collect(),
+        system: None,
+    };
+    assert_eq!(
+        port_counts(&block).unwrap(),
+        PortCounts {
+            inputs: 1,
+            outputs: 0
+        }
+    );
+    block.params.insert(OPAQUE_OUTPUTS.into(), "x".into());
+    assert!(port_counts(&block).is_err());
+    block.params.clear();
+    assert!(port_counts(&block).is_err());
+
+    let source = Block {
+        sid: BlockId(2),
+        block_type: "Constant".into(),
+        name: "C".into(),
+        position: Rect::new(0.0, 0.0, 30.0, 30.0),
+        orientation: Orientation::Right,
+        params: [
+            ("Value".into(), "1".into()),
+            ("SampleTime".into(), "inf".into()),
+        ]
+        .into_iter()
+        .collect(),
+        system: None,
+    };
+    let mut model = Model::new("opaque");
+    model.root.blocks = vec![
+        source,
+        Block {
+            sid: BlockId(1),
+            block_type: "UnknownOpaqueBlock".into(),
+            name: "T".into(),
+            position: Rect::new(40.0, 0.0, 70.0, 30.0),
+            orientation: Orientation::Right,
+            params: [(OPAQUE_INPUTS.into(), "1".into())].into_iter().collect(),
+            system: None,
+        },
+    ];
+    model.root.lines.push(Line {
+        id: LineId(1),
+        src: pr(2, 1),
+        points: vec![],
+        dst: Some(pr(1, 1)),
+        branches: vec![],
+        name: String::new(),
+    });
+    let diagnostics = validate_model(&model);
+    assert!(diagnostics.iter().any(|d| d.code == "E_UNKNOWN_BLOCK_TYPE"));
+    assert!(!diagnostics.iter().any(|d| d.code == "E_PORT_OUT_OF_RANGE"));
 }
 
 #[test]
@@ -60,12 +125,10 @@ fn validate_cases() {
         .iter()
         .any(|d| d.message == "parameter 'Gain' is missing"));
     let mut m = m0.clone();
-    m.root.blocks[1]
-        .params
-        .insert("Gain".into(), "[1 2]".into());
+    m.root.blocks[1].params.insert("Gain".into(), "K".into());
     assert!(validate_model(&m)
         .iter()
-        .any(|d| d.message == "parameter 'Gain': expected a scalar"));
+        .any(|d| d.message == "parameter 'Gain': unknown identifier 'K' (at byte 0)"));
     let mut m = m0.clone();
     m.root.lines[1].src.block = BlockId(99);
     assert!(codes(&m).contains(&"E_LINE_SRC_MISSING".into()));
@@ -420,4 +483,32 @@ fn create_subsystem_from_gain() {
     assert!(dsts.contains(&pr(sid.0, 1)) && dsts.contains(&pr(3, 1)));
     h.undo(&mut m).unwrap();
     assert_eq!(m.root.blocks, m0.root.blocks);
+}
+
+/// #196: a new Inport must reuse the lowest free port number, not `count + 1`.
+#[test]
+fn new_inport_takes_the_lowest_free_port_number() {
+    let mut sys = System::default();
+    for sid in 1..=3 {
+        let b = new_block(&sys, "Inport", BlockId(sid), Point::new(0.0, 0.0)).unwrap();
+        sys.insert_block_sorted(b);
+    }
+    let ports = |s: &System| -> Vec<String> {
+        s.blocks
+            .iter()
+            .filter_map(|b| b.params.get("Port").cloned())
+            .collect()
+    };
+    assert_eq!(ports(&sys), ["1", "2", "3"]);
+
+    // Delete the Inport with Port = 2 and add a new one.
+    sys.blocks
+        .retain(|b| b.params.get("Port").map(String::as_str) != Some("2"));
+    let added = new_block(&sys, "Inport", BlockId(9), Point::new(0.0, 0.0)).unwrap();
+    assert_eq!(added.params.get("Port").map(String::as_str), Some("2"));
+    sys.insert_block_sorted(added);
+    // Blocks are ordered by SID, so compare the numbers as a set.
+    let mut after = ports(&sys);
+    after.sort();
+    assert_eq!(after, ["1", "2", "3"]);
 }

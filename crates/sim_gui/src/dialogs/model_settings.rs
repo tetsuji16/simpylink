@@ -96,6 +96,7 @@ impl SettingsDialogState {
             abs_tol: abs,
             max_step,
             output_step: step,
+            fixed_step: self.original.fixed_step,
         })
     }
     /// Button press.

@@ -1,0 +1,174 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "relational_logic",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 1e-6,
+    "abs_tol": 1e-9,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 9,
+  "next_line_id": 11,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Clock",
+        "name": "Clock",
+        "position": [20.0, 100.0, 50.0, 130.0],
+        "orientation": "right",
+        "params": {}
+      },
+      {
+        "sid": 2,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [20.0, 160.0, 50.0, 190.0],
+        "orientation": "right",
+        "params": {
+          "Value": "1",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "RelationalOperator",
+        "name": "Relational Operator",
+        "position": [120.0, 100.0, 150.0, 132.0],
+        "orientation": "right",
+        "params": {
+          "Operator": ">="
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Constant",
+        "name": "Constant1",
+        "position": [20.0, 260.0, 50.0, 290.0],
+        "orientation": "right",
+        "params": {
+          "Value": "0.5",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "RelationalOperator",
+        "name": "Relational Operator1",
+        "position": [120.0, 260.0, 150.0, 292.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "<"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "Logic",
+        "name": "Logical Operator",
+        "position": [230.0, 180.0, 260.0, 211.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "OR",
+          "Inputs": "2"
+        }
+      },
+      {
+        "sid": 7,
+        "block_type": "Logic",
+        "name": "Logical Operator1",
+        "position": [230.0, 340.0, 260.0, 371.0],
+        "orientation": "right",
+        "params": {
+          "Operator": "NOT",
+          "Inputs": "1"
+        }
+      },
+      {
+        "sid": 8,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [400.0, 100.0, 430.0, 220.0],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "3"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": { "block": 2, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": { "block": 3, "port": 1 },
+        "points": [],
+        "dst": { "block": 8, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 4,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 5, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": { "block": 4, "port": 1 },
+        "points": [],
+        "dst": { "block": 5, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 6,
+        "src": { "block": 5, "port": 1 },
+        "points": [],
+        "dst": { "block": 6, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 7,
+        "src": { "block": 3, "port": 1 },
+        "points": [],
+        "dst": { "block": 6, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 8,
+        "src": { "block": 6, "port": 1 },
+        "points": [],
+        "dst": { "block": 8, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 9,
+        "src": { "block": 3, "port": 1 },
+        "points": [],
+        "dst": { "block": 7, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 10,
+        "src": { "block": 7, "port": 1 },
+        "points": [],
+        "dst": { "block": 8, "port": 3 },
+        "branches": []
+      }
+    ]
+  }
+}

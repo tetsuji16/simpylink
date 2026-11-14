@@ -1,7 +1,9 @@
 //! Command line interface (DES-01 §5).
+#[path = "report.rs"]
+mod report;
 use clap::{Parser, Subcommand};
+use report::print_diagnostics;
 use sim_codegen_py::{generate, CodegenOptions};
-use sim_core::diag::Diagnostic;
 use sim_core::model::Model;
 use sim_runner::{
     check_environment, discover_python, load_results, run_blocking, RunStatus, RunnerConfig,
@@ -40,6 +42,9 @@ pub enum CliCommand {
         python: Option<PathBuf>,
         #[arg(long = "keep-script")]
         keep_script: bool,
+        /// Give up after this many seconds (default: no limit)
+        #[arg(long, value_parser = parse_timeout)]
+        timeout: Option<f64>,
     },
     /// Check the Python environment
     CheckPython {
@@ -48,47 +53,30 @@ pub enum CliCommand {
     },
 }
 
+/// Exit code of a successful command.
 pub const EXIT_OK: i32 = 0;
+/// Exit code of a failed simulation run.
 pub const EXIT_RUN_FAILED: i32 = 1;
+/// Exit code of a model that does not compile.
 pub const EXIT_MODEL_ERROR: i32 = 3;
+/// Exit code of an I/O error.
 pub const EXIT_IO_ERROR: i32 = 4;
+/// Exit code of a broken Python environment.
 pub const EXIT_PYTHON_ENV: i32 = 5;
 
-/// Prints diagnostics to stderr.
-pub fn print_diagnostics(diags: &[Diagnostic], model: &Model) {
-    for d in diags {
-        let mut line = format!("{}[{}]: {}", sev(d), d.code, d.message);
-        if let Some(b) = d.location.block {
-            let name = find_name(model, b).unwrap_or_default();
-            line.push_str(&format!(" (block {b} \"{name}\")"));
-        }
-        eprintln!("{line}");
-    }
+/// Parses `--timeout`: a positive, finite number of seconds that fits a `Duration`.
+fn parse_timeout(raw: &str) -> Result<f64, String> {
+    let bad = || format!("timeout must be a positive number of seconds, got '{raw}'");
+    let secs = raw.trim().parse::<f64>().map_err(|_| bad())?;
+    timeout_duration(secs).map_err(|_| bad())?;
+    Ok(secs)
 }
 
-fn sev(d: &Diagnostic) -> &'static str {
-    match d.severity {
-        sim_core::diag::Severity::Error => "error",
-        sim_core::diag::Severity::Warning => "warning",
-        sim_core::diag::Severity::Info => "info",
+fn timeout_duration(secs: f64) -> Result<std::time::Duration, ()> {
+    if !secs.is_finite() || secs <= 0.0 {
+        return Err(());
     }
-}
-
-fn find_name(m: &Model, sid: sim_core::ids::BlockId) -> Option<String> {
-    fn rec(s: &sim_core::model::System, sid: sim_core::ids::BlockId) -> Option<String> {
-        for b in &s.blocks {
-            if b.sid == sid {
-                return Some(b.name.clone());
-            }
-            if let Some(c) = &b.system {
-                if let Some(n) = rec(c, sid) {
-                    return Some(n);
-                }
-            }
-        }
-        None
-    }
-    rec(&m.root, sid)
+    std::time::Duration::try_from_secs_f64(secs).map_err(|_| ())
 }
 
 fn build(model_path: &Path) -> Result<(Model, sim_codegen_py::GeneratedCode), i32> {
@@ -131,15 +119,42 @@ pub fn run_codegen(model: &Path, output: &Path) -> i32 {
     EXIT_OK
 }
 
+/// Formats one channel summary line.
+///
+/// A channel whose samples are all NaN / Inf has no range to report, so the line says
+/// `no finite samples` instead of `min inf max -inf` (#207).
+fn channel_summary(c: &sim_runner::Channel) -> String {
+    let fin: Vec<f64> = c.values.iter().copied().filter(|v| v.is_finite()).collect();
+    match (
+        fin.iter().copied().reduce(f64::min),
+        fin.iter().copied().reduce(f64::max),
+    ) {
+        (Some(min), Some(max)) => format!(
+            "  {}: min {}, max {}, final {}",
+            c.name,
+            min,
+            max,
+            c.values.last().copied().unwrap_or(f64::NAN)
+        ),
+        _ => format!("  {}: no finite samples", c.name),
+    }
+}
+
 /// `simpylink run`.
-pub fn run_run(model: &Path, out_dir: &Path, python: Option<&Path>, keep_script: bool) -> i32 {
+pub fn run_run(
+    model: &Path,
+    out_dir: &Path,
+    python: Option<&Path>,
+    keep_script: bool,
+    timeout: Option<std::time::Duration>,
+) -> i32 {
     let (m, code) = match build(model) {
         Ok(x) => x,
         Err(c) => return c,
     };
     let cfg = RunnerConfig {
         python: python.map(Path::to_path_buf),
-        timeout: None,
+        timeout,
     };
     let env = match discover_python(&cfg).and_then(|e| check_environment(&e).map(|_| e)) {
         Ok(e) => e,
@@ -157,7 +172,7 @@ pub fn run_run(model: &Path, out_dir: &Path, python: Option<&Path>, keep_script:
         eprintln!("error[E_IO]: {e}");
         return EXIT_IO_ERROR;
     }
-    let outcome = match run_blocking(&env, &script, out_dir, None) {
+    let outcome = match run_blocking(&env, &script, out_dir, timeout) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("error[E_RUN]: {e}");
@@ -178,6 +193,13 @@ pub fn run_run(model: &Path, out_dir: &Path, python: Option<&Path>, keep_script:
         eprintln!("error[E_RUN]: {message}");
         return EXIT_RUN_FAILED;
     }
+    if let RunStatus::TimedOut = outcome.status {
+        match timeout {
+            Some(t) => eprintln!("simulation timed out after {} s", t.as_secs_f64()),
+            None => eprintln!("simulation timed out"),
+        }
+        return EXIT_RUN_FAILED;
+    }
     if outcome.status != RunStatus::Succeeded {
         eprintln!("error[E_RUN]: {:?}", outcome.status);
         return EXIT_RUN_FAILED;
@@ -196,16 +218,7 @@ pub fn run_run(model: &Path, out_dir: &Path, python: Option<&Path>, keep_script:
         m.config.stop_time
     );
     for c in &r.channels {
-        let fin: Vec<f64> = c.values.iter().copied().filter(|v| v.is_finite()).collect();
-        let min = fin.iter().copied().fold(f64::INFINITY, f64::min);
-        let max = fin.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        println!(
-            "  {}: min {}, max {}, final {}",
-            c.name,
-            min,
-            max,
-            c.values.last().copied().unwrap_or(f64::NAN)
-        );
+        println!("{}", channel_summary(c));
     }
     println!("results: {}", out_dir.join("results.csv").display());
     if !keep_script {
@@ -249,7 +262,98 @@ pub fn run_cli(cmd: &CliCommand) -> i32 {
             out_dir,
             python,
             keep_script,
-        } => run_run(model, out_dir, python.as_deref(), *keep_script),
+            timeout,
+        } => {
+            let timeout = match timeout.map(timeout_duration) {
+                Some(Ok(duration)) => Some(duration),
+                Some(Err(())) => {
+                    eprintln!("error: timeout must be a positive number of seconds");
+                    return EXIT_RUN_FAILED;
+                }
+                None => None,
+            };
+            run_run(model, out_dir, python.as_deref(), *keep_script, timeout)
+        }
         CliCommand::CheckPython { python } => run_check_python(python.as_deref()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel(values: Vec<f64>) -> sim_runner::Channel {
+        sim_runner::Channel {
+            name: "Scope/1".into(),
+            block_sid: 3,
+            port: 1,
+            values,
+        }
+    }
+
+    #[test]
+    fn channel_summary_reports_the_finite_range() {
+        assert_eq!(
+            channel_summary(&channel(vec![0.0, 6.0, 3.0])),
+            "  Scope/1: min 0, max 6, final 3"
+        );
+    }
+
+    #[test]
+    fn channel_summary_skips_non_finite_samples() {
+        assert_eq!(
+            channel_summary(&channel(vec![f64::NAN, 2.0, f64::INFINITY])),
+            "  Scope/1: min 2, max 2, final inf"
+        );
+    }
+
+    #[test]
+    fn channel_summary_says_so_when_no_sample_is_finite() {
+        assert_eq!(
+            channel_summary(&channel(vec![f64::NAN, f64::INFINITY])),
+            "  Scope/1: no finite samples"
+        );
+        assert_eq!(
+            channel_summary(&channel(vec![])),
+            "  Scope/1: no finite samples"
+        );
+    }
+
+    #[test]
+    fn timeout_parser_accepts_only_positive_finite_numbers() {
+        assert_eq!(parse_timeout("1"), Ok(1.0));
+        assert_eq!(parse_timeout("0.5"), Ok(0.5));
+        assert!(parse_timeout("0").is_err());
+        assert!(parse_timeout("-1").is_err());
+        assert!(parse_timeout("abc").is_err());
+        assert!(parse_timeout("inf").is_err());
+        assert!(parse_timeout("nan").is_err());
+        // Finite and positive, but too large for a `Duration`.
+        assert!(parse_timeout("1e300").is_err());
+    }
+
+    #[test]
+    fn programmatic_timeout_conversion_rejects_invalid_values_without_panicking() {
+        assert_eq!(
+            timeout_duration(1.5),
+            Ok(std::time::Duration::from_millis(1500))
+        );
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
+            assert!(timeout_duration(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn run_cli_rejects_invalid_programmatic_timeouts_without_panicking() {
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
+            let command = CliCommand::Run {
+                model: PathBuf::from("unused.json"),
+                out_dir: PathBuf::from("unused-results"),
+                python: None,
+                keep_script: false,
+                timeout: Some(invalid),
+            };
+            assert_eq!(run_cli(&command), EXIT_RUN_FAILED, "{invalid}");
+        }
     }
 }

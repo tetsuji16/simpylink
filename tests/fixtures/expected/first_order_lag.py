@@ -30,6 +30,7 @@ SOLVER = "RK45"
 REL_TOL = 1e-6
 ABS_TOL = 1e-9
 MAX_STEP = math.inf
+FIXED_STEP = None
 
 # ---------------------------------------------------------------------------
 # Block parameters
@@ -101,6 +102,63 @@ def _time_tolerance():
     return 1e-9 * max(1.0, abs(START_TIME), abs(STOP_TIME))
 
 
+FIXED_METHODS = ("ode1", "ode2", "ode3", "ode4", "ode5")
+
+# Explicit Runge-Kutta tableaus (DES-07 §2.3): method -> (c, A, b).
+# A[i] holds the coefficients of stage i+1 (A has one row fewer than c).
+_TABLEAUS = {
+    "ode1": (
+        [0.0],
+        [],
+        [1.0],
+    ),
+    "ode2": (
+        [0.0, 1.0],
+        [[1.0]],
+        [1 / 2, 1 / 2],
+    ),
+    "ode3": (
+        [0.0, 1 / 2, 3 / 4, 1.0],
+        [[1 / 2], [0.0, 3 / 4], [2 / 9, 1 / 3, 4 / 9]],
+        [2 / 9, 1 / 3, 4 / 9, 0.0],
+    ),
+    "ode4": (
+        [0.0, 1 / 2, 1 / 2, 1.0],
+        [[1 / 2], [0.0, 1 / 2], [0.0, 0.0, 1.0]],
+        [1 / 6, 1 / 3, 1 / 3, 1 / 6],
+    ),
+    "ode5": (
+        [0.0, 1 / 5, 3 / 10, 4 / 5, 8 / 9, 1.0, 1.0],
+        [
+            [1 / 5],
+            [3 / 40, 9 / 40],
+            [44 / 45, -56 / 15, 32 / 9],
+            [19372 / 6561, -25360 / 2187, 64448 / 6561, -212 / 729],
+            [9017 / 3168, -355 / 33, 46732 / 5247, 49 / 176, -5103 / 18656],
+            [35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84],
+        ],
+        [35 / 384, 0.0, 500 / 1113, 125 / 192, -2187 / 6784, 11 / 84, 0.0],
+    ),
+}
+
+
+def fixed_step(fun, t, h, x, method):
+    """One explicit Runge-Kutta step of size h from (t, x)."""
+    c, a, b = _TABLEAUS[method]
+    x = np.asarray(x, dtype=float)
+    k = []
+    for i, ci in enumerate(c):
+        row = a[i - 1] if i > 0 else ()
+        stage = x
+        for j, aij in enumerate(row):
+            stage = stage + h * aij * k[j]
+        k.append(np.asarray(fun(t + ci * h, stage), dtype=float))
+    out = x
+    for bi, ki in zip(b, k):
+        out = out + h * bi * ki
+    return out
+
+
 def major_time_points():
     """Return a sorted list of (t, is_output, hit_rate_indices)."""
     tol = _time_tolerance()
@@ -124,6 +182,14 @@ def major_time_points():
                 break
             if t >= START_TIME - tol:
                 events.append((t, "hit", index))
+            k += 1
+    if FIXED_STEP is not None:
+        k = 0
+        while True:
+            t = round(START_TIME + k * FIXED_STEP, 12)
+            if t > STOP_TIME + tol:
+                break
+            events.append((t, "step", None))
             k += 1
     events.sort(key=lambda e: e[0])
     points = []
@@ -158,20 +224,29 @@ def simulate():
         if i + 1 < len(points) and NUM_CONT_STATES > 0:
             t_next = points[i + 1][0]
             d_hold = d
-            sol = solve_ivp(
-                lambda tt, xx: compute_derivatives(tt, xx, d_hold, t),
-                (t, t_next),
-                x,
-                method=SOLVER,
-                rtol=REL_TOL,
-                atol=ABS_TOL,
-                max_step=MAX_STEP,
-            )
-            if not sol.success:
-                raise SimulationError(
-                    f"solver failed between t={t!r} and t={t_next!r}: {sol.message}"
+            if SOLVER in FIXED_METHODS:
+                x = fixed_step(
+                    lambda tt, xx: compute_derivatives(tt, xx, d_hold, t),
+                    t,
+                    t_next - t,
+                    x,
+                    SOLVER,
                 )
-            x = sol.y[:, -1].copy()
+            elif SOLVER != "discrete":
+                sol = solve_ivp(
+                    lambda tt, xx: compute_derivatives(tt, xx, d_hold, t),
+                    (t, t_next),
+                    x,
+                    method=SOLVER,
+                    rtol=REL_TOL,
+                    atol=ABS_TOL,
+                    max_step=MAX_STEP,
+                )
+                if not sol.success:
+                    raise SimulationError(
+                        f"solver failed between t={t!r} and t={t_next!r}: {sol.message}"
+                    )
+                x = sol.y[:, -1].copy()
     return np.array(times, dtype=float), np.array(rows, dtype=float).reshape(len(times), len(LOG_CHANNELS))
 
 

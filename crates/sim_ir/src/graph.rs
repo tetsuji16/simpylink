@@ -11,6 +11,9 @@ use std::collections::BTreeMap;
 pub fn is_virtual(b: &Block, path: &SystemPath) -> bool {
     b.system.is_some()
         || b.block_type == "SubSystem"
+        || b.block_type == "Goto"
+        || b.block_type == "From"
+        || b.block_type == "GotoTagVisibility"
         || (!path.is_root() && (b.block_type == "Inport" || b.block_type == "Outport"))
 }
 
@@ -60,6 +63,83 @@ impl<'a> Ctx<'a> {
         }
         let sys = self.model.system(path)?;
         let b = sys.block(src.block)?;
+        if b.block_type == "From" {
+            let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+            let local = sys.blocks.iter().find(|g| {
+                g.block_type == "Goto"
+                    && g.params.get("GotoTag").map(String::as_str).unwrap_or("A") == tag
+                    && g.params
+                        .get("TagVisibility")
+                        .map(String::as_str)
+                        .unwrap_or("local")
+                        == "local"
+            });
+            let scope_for = |p: &SystemPath| {
+                let mut p = p.clone();
+                loop {
+                    let system = self.model.system(&p)?;
+                    if system.blocks.iter().any(|g| {
+                        g.block_type == "GotoTagVisibility"
+                            && g.params.get("GotoTag").map(String::as_str).unwrap_or("A") == tag
+                    }) {
+                        return Some(p);
+                    }
+                    let sid = p.0.pop()?;
+                    let parent = self.model.system(&p)?;
+                    if parent
+                        .block(sid)?
+                        .params
+                        .get("TreatAsAtomicUnit")
+                        .is_some_and(|v| v == "on")
+                    {
+                        return None;
+                    }
+                }
+            };
+            let scoped_target = || {
+                let scope = scope_for(path)?;
+                self.locals.keys().find_map(|p| {
+                    if !p.0.starts_with(&scope.0) || scope_for(p).as_ref() != Some(&scope) {
+                        return None;
+                    }
+                    let system = self.model.system(p)?;
+                    system
+                        .blocks
+                        .iter()
+                        .find(|g| {
+                            g.block_type == "Goto"
+                                && g.params.get("GotoTag").map(String::as_str).unwrap_or("A") == tag
+                                && g.params.get("TagVisibility").map(String::as_str)
+                                    == Some("scoped")
+                        })
+                        .map(|g| (p.clone(), g))
+                })
+            };
+            let target = local
+                .map(|g| (path.clone(), g))
+                .or_else(scoped_target)
+                .or_else(|| {
+                    self.locals.keys().find_map(|p| {
+                        let system = self.model.system(p)?;
+                        system
+                            .blocks
+                            .iter()
+                            .find(|g| {
+                                g.block_type == "Goto"
+                                    && g.params.get("GotoTag").map(String::as_str).unwrap_or("A")
+                                        == tag
+                                    && g.params.get("TagVisibility").map(String::as_str)
+                                        == Some("global")
+                            })
+                            .map(|g| (p.clone(), g))
+                    })
+                })?;
+            let d = self.locals.get(&target.0)?.get(&PortRef {
+                block: target.1.sid,
+                port: 1,
+            })?;
+            return self.resolve(&target.0, *d, depth + 1);
+        }
         if b.system.is_some() {
             let child = path.child(b.sid);
             let csys = b.system.as_ref()?;
@@ -170,6 +250,7 @@ pub fn allocate_signals(
                 id,
                 source: src,
                 var_name: signal_var_name(&vb, port, c.outputs),
+                width: 1,
             });
             map.insert(src, id);
         }
@@ -291,5 +372,24 @@ mod tests {
         let (empty_signals, empty_map) = allocate_signals(&empty_model, &empty_conn);
         assert!(empty_signals.is_empty());
         assert!(empty_map.is_empty());
+    }
+
+    #[test]
+    fn goto_connections_and_cycle() {
+        let mut m = fixture("goto_from");
+        let conn = build_connectivity(&m);
+        assert_eq!(conn.driver.get(&pr(2, 1)), Some(&pr(1, 1)));
+        assert_eq!(conn.driver.get(&pr(3, 2)), Some(&pr(6, 1)));
+        assert!(!flat_blocks(&m)
+            .iter()
+            .any(|b| b.block.block_type == "Goto" || b.block.block_type == "From"));
+        m.root.blocks[7].params.insert("GotoTag".into(), "u".into());
+        assert_eq!(
+            build_connectivity(&m).driver.get(&pr(2, 1)),
+            Some(&pr(1, 1))
+        );
+        // Route the Goto input back from its own From; resolution must terminate.
+        m.root.lines[0].src = pr(5, 1);
+        assert!(!build_connectivity(&m).driver.contains_key(&pr(2, 1)));
     }
 }

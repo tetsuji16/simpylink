@@ -243,3 +243,76 @@ fn save_and_load_file() {
     assert_eq!(m.root.blocks[0].position, Rect::new(50.0, 50.0, 80.0, 80.0));
     assert_eq!(m.root.lines[0].points, Vec::<Point>::new());
 }
+
+#[test]
+fn format_version_follows_features() {
+    let mut m = Model::new("v");
+    assert!(to_json_string(&m).contains("\"format_version\": 1"));
+    assert!(!to_json_string(&m).contains("variables"));
+    m.variables.insert("Kp".into(), "2".into());
+    let s = to_json_string(&m);
+    assert!(s.contains("\"format_version\": 2"));
+    let back = from_json_str(&s).unwrap();
+    assert_eq!(back.variables, m.variables);
+    let mut f = Model::new("f");
+    f.config.solver = sim_core::model::SolverKind::Ode4;
+    f.config.fixed_step = Some(0.01);
+    let s = to_json_string(&f);
+    assert!(s.contains("\"format_version\": 2"));
+    assert!(s.contains("\"solver\": \"ode4\""));
+    assert_eq!(from_json_str(&s).unwrap().config, f.config);
+    assert!(from_json_str(&s.replace("\"format_version\": 2", "\"format_version\": 3")).is_err());
+}
+
+/// A minimal model document with `format_version` replaced by `raw` (#198).
+fn model_with_version(raw: &str) -> String {
+    to_json_string(&Model::new("v")).replace(
+        "\"format_version\": 1",
+        &format!("\"format_version\": {raw}"),
+    )
+}
+
+#[test]
+fn format_version_must_be_an_integer_that_fits_u32() {
+    for raw in ["4294967297", "1.5", "\"1\"", "null", "-1"] {
+        let text = model_with_version(raw);
+        match from_json_str(&text) {
+            Err(sim_core::json::ModelIoError::InvalidField { field, message }) => {
+                assert_eq!(field, "format_version", "{raw}");
+                assert_eq!(message, "must be an integer between 1 and 2", "{raw}");
+            }
+            other => panic!("{raw}: expected InvalidField, got {other:?}"),
+        }
+    }
+    // An integer in range but not supported keeps its own error.
+    assert!(matches!(
+        from_json_str(&model_with_version("3")),
+        Err(sim_core::json::ModelIoError::UnsupportedVersion(3))
+    ));
+}
+
+#[test]
+fn saving_non_finite_geometry_fails_without_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nan.json");
+    let mut m = build_step_gain_scope();
+    m.root.blocks[0].position.left = f64::NAN;
+    match save_to_path(&m, &path) {
+        Err(sim_core::json::ModelIoError::InvalidField { field, message }) => {
+            assert_eq!(field, "geometry");
+            assert_eq!(message, "block positions and line points must be finite");
+        }
+        other => panic!("expected InvalidField, got {other:?}"),
+    }
+    assert!(!path.exists(), "a refused save must not create the file");
+    assert!(
+        std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+        "a refused save must not leave a temp file"
+    );
+
+    // A line point that is infinite is refused as well.
+    let mut m = build_step_gain_scope();
+    m.root.lines[0].points.push(Point::new(0.0, f64::INFINITY));
+    assert!(save_to_path(&m, &path).is_err());
+    assert!(!path.exists());
+}

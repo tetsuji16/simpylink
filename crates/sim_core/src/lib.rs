@@ -13,6 +13,7 @@ pub mod model;
 pub mod path;
 pub mod subsystem;
 pub mod validate;
+pub mod workspace;
 
 /// Returns the crate name. Used only by the workspace smoke test.
 pub fn crate_name() -> &'static str {

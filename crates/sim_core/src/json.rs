@@ -1,5 +1,5 @@
 //! JSON format v1 load/save.
-use crate::model::{Model, System, MODEL_FORMAT, MODEL_FORMAT_VERSION};
+use crate::model::{Model, System, MODEL_FORMAT, MODEL_FORMAT_VERSION, MODEL_FORMAT_VERSION_MAX};
 use std::path::Path;
 
 /// Errors while reading or writing model files.
@@ -15,16 +15,48 @@ pub enum ModelIoError {
     },
     #[error("not a simpylink model (format = {0:?})")]
     WrongFormat(String),
-    #[error("unsupported format_version {0} (supported: 1)")]
+    #[error("unsupported format_version {0} (supported: 1, 2)")]
     UnsupportedVersion(u32),
+    /// A field of the JSON document is present but not usable (#198).
+    #[error("{field}: {message}")]
+    InvalidField { field: String, message: String },
 }
 
-/// Pretty JSON + trailing newline. Deterministic.
+/// Message for a `format_version` that is not an integer in the supported range.
+fn version_message() -> String {
+    format!("must be an integer between {MODEL_FORMAT_VERSION} and {MODEL_FORMAT_VERSION_MAX}")
+}
+
+/// Pretty JSON + trailing newline. Deterministic. `format_version` is written as
+/// [`Model::required_format_version`], so models without v2 features stay v1.
 pub fn to_json_string(model: &Model) -> String {
-    // Model contains only string-keyed maps and numbers: serialization is infallible.
-    let mut s = serde_json::to_string_pretty(model).expect("Model serialization is infallible");
+    match try_to_json_string(model) {
+        Ok(s) => s,
+        // Unreachable: `Model` holds string-keyed maps, enums and numbers, which
+        // `serde_json` always serializes. Report the failure instead of returning text
+        // that looks like a model; `save_to_path` propagates the error instead.
+        Err(e) => {
+            let mut s = serde_json::json!({ "serialization_error": e.to_string() }).to_string();
+            s.push('\n');
+            s
+        }
+    }
+}
+
+/// Pretty JSON + trailing newline, or the reason the model cannot be written.
+///
+/// The model is serialized directly (not through `serde_json::Value`, which would
+/// reorder the keys) so the field order of the file stays stable.
+pub fn try_to_json_string(model: &Model) -> Result<String, ModelIoError> {
+    let mut m = model.clone();
+    m.format_version = model.required_format_version();
+    let mut s = serde_json::to_string_pretty(&m).map_err(|e| ModelIoError::Parse {
+        line: 0,
+        column: 0,
+        message: e.to_string(),
+    })?;
     s.push('\n');
-    s
+    Ok(s)
 }
 
 fn sort_system(s: &mut System) {
@@ -50,12 +82,25 @@ pub fn from_json_str(s: &str) -> Result<Model, ModelIoError> {
         Some(other) => return Err(ModelIoError::WrongFormat(other.to_string())),
         None => return Err(ModelIoError::WrongFormat(String::new())),
     }
-    let v = value
-        .get("format_version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
-    if v != MODEL_FORMAT_VERSION {
-        return Err(ModelIoError::UnsupportedVersion(v));
+    // `format_version` must be an integer that fits in `u32`: reading it with
+    // `as_u64().unwrap_or(0) as u32` silently truncated 4294967297 to 1 (#198).
+    let version = match value.get("format_version") {
+        Some(serde_json::Value::Number(n)) => n
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| ModelIoError::InvalidField {
+                field: "format_version".into(),
+                message: version_message(),
+            })?,
+        _ => {
+            return Err(ModelIoError::InvalidField {
+                field: "format_version".into(),
+                message: version_message(),
+            })
+        }
+    };
+    if !(MODEL_FORMAT_VERSION..=MODEL_FORMAT_VERSION_MAX).contains(&version) {
+        return Err(ModelIoError::UnsupportedVersion(version));
     }
     let mut m: Model = serde_json::from_value(value).map_err(|e| ModelIoError::Parse {
         line: 0,
@@ -69,9 +114,19 @@ pub fn from_json_str(s: &str) -> Result<Model, ModelIoError> {
 }
 
 /// Atomic save (write temp file then rename).
+///
+/// A model whose geometry is not finite cannot be written: `serde_json` would store
+/// NaN / ±Inf as `null`, which does not load again (#198).
 pub fn save_to_path(model: &Model, path: &Path) -> Result<(), ModelIoError> {
+    if crate::validate::has_non_finite_geometry(model) {
+        return Err(ModelIoError::InvalidField {
+            field: "geometry".into(),
+            message: "block positions and line points must be finite".into(),
+        });
+    }
+    let text = try_to_json_string(model)?;
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, to_json_string(model))?;
+    std::fs::write(&tmp, text)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ignored_cleanup = std::fs::remove_file(&tmp);
         return Err(e.into());

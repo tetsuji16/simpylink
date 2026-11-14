@@ -13,7 +13,6 @@ use crate::ui_icons::{paint_ui_icon, UiIcon};
 use egui::{Key, Modifiers as EM};
 use sim_core::edit::Command;
 use sim_core::geom::Point;
-use sim_core::model::SolverKind;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -535,12 +534,7 @@ impl SimpylinkApp {
             font.clone(),
             theme::TEXT,
         );
-        let solver = match self.state.doc.model.config.solver {
-            SolverKind::Auto => "VariableStepAuto",
-            SolverKind::Ode45 => "ode45",
-            SolverKind::Ode23 => "ode23",
-            SolverKind::Ode15s => "ode15s",
-        };
+        let solver = self.state.doc.model.config.solver.simulink_name();
         let zoom = format!("{:.0}%", self.state.canvas.view.zoom * 100.0);
         let solver_x = rect.right() - 150.0;
         let zoom_x = solver_x - 120.0;
@@ -727,6 +721,7 @@ impl eframe::App for SimpylinkApp {
                 .results
                 .as_ref()
                 .and_then(|r| r.time.last().copied()),
+            stale: self.state.results_are_stale(),
         };
         self.scope_views
             .retain(|k, _| self.state.open_scopes.contains(k));

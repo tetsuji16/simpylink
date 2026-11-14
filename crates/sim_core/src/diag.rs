@@ -122,4 +122,26 @@ pub mod codes {
     pub const E_SAMPLE_TIME: &str = "E_SAMPLE_TIME";
     pub const E_UNSUPPORTED_BLOCK: &str = "E_UNSUPPORTED_BLOCK";
     pub const E_UNSUPPORTED_FEATURE: &str = "E_UNSUPPORTED_FEATURE";
+    /// Duplicate local or global Goto tag.
+    pub const E_DUPLICATE_GOTO_TAG: &str = "E_DUPLICATE_GOTO_TAG";
+    /// A From block has no visible matching Goto.
+    pub const E_UNMATCHED_FROM: &str = "E_UNMATCHED_FROM";
+    /// A model variable definition is invalid or cannot be evaluated (#94).
+    pub const E_VARIABLE: &str = "E_VARIABLE";
+    /// Signal widths do not match (vector signals, #92 / DES-07 §3).
+    pub const E_DIMENSION: &str = "E_DIMENSION";
+    /// A data-type parameter was ignored; simpylink computes in double (DES-07 §5).
+    pub const W_DATA_TYPE_IGNORED: &str = "W_DATA_TYPE_IGNORED";
+    /// An atomic subsystem was flattened like a virtual one (DES-07 §6).
+    pub const W_ATOMIC_AS_VIRTUAL: &str = "W_ATOMIC_AS_VIRTUAL";
+    /// Two log channels ended up with the same name (#203).
+    pub const E_DUPLICATE_CHANNEL: &str = "E_DUPLICATE_CHANNEL";
+    /// A block, line or Goto tag name is empty or contains control characters (#198).
+    pub const E_INVALID_NAME: &str = "E_INVALID_NAME";
+    /// A block position or line point is NaN or ±Inf (#198).
+    pub const E_NON_FINITE_GEOMETRY: &str = "E_NON_FINITE_GEOMETRY";
+    /// Two Inports (or two Outports) of one system use the same `Port` number (#196).
+    pub const E_DUPLICATE_PORT_NUMBER: &str = "E_DUPLICATE_PORT_NUMBER";
+    /// Inport (or Outport) `Port` numbers are not `1..=count` without gaps (#196).
+    pub const E_PORT_NUMBER_GAP: &str = "E_PORT_NUMBER_GAP";
 }

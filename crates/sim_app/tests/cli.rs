@@ -42,7 +42,8 @@ fn parsing() {
             model: "m.json".into(),
             out_dir: "r".into(),
             python: Some("/usr/bin/python3".into()),
-            keep_script: true
+            keep_script: true,
+            timeout: None
         })
     );
     assert_eq!(
@@ -53,6 +54,58 @@ fn parsing() {
     );
     assert!(Cli::try_parse_from(["simpylink", "codegen", "m.json"]).is_err());
     assert!(Cli::try_parse_from(["simpylink", "unknown"]).is_err());
+}
+
+#[test]
+fn timeout_argument() {
+    // §207-E: a positive number of seconds is kept, anything else is a clap error.
+    assert_eq!(
+        Cli::try_parse_from([
+            "simpylink",
+            "run",
+            "m.json",
+            "--out-dir",
+            "r",
+            "--timeout",
+            "1.5"
+        ])
+        .unwrap()
+        .command,
+        Some(CliCommand::Run {
+            model: "m.json".into(),
+            out_dir: "r".into(),
+            python: None,
+            keep_script: false,
+            timeout: Some(1.5)
+        })
+    );
+    for bad in ["0", "-1", "abc", "inf", "nan", "1e300"] {
+        assert!(
+            Cli::try_parse_from([
+                "simpylink",
+                "run",
+                "m.json",
+                "--out-dir",
+                "r",
+                "--timeout",
+                bad
+            ])
+            .is_err(),
+            "--timeout {bad} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn version_and_unknown_subcommand() {
+    let output = bin().arg("--version").output().unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("simpylink {}", env!("CARGO_PKG_VERSION"))
+    );
+    let output = bin().arg("unknown").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
 }
 
 #[test]

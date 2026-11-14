@@ -33,6 +33,23 @@ pub fn py_str(s: &str) -> String {
     o
 }
 
+/// Makes `s` safe to embed in a one-line Python `#` comment.
+///
+/// Control characters and the Unicode line/paragraph separators are replaced by a
+/// space; otherwise a block name containing a newline would end the comment and the
+/// rest of the name would run as Python code.
+pub fn py_comment(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_control() || c == '\u{2028}' || c == '\u{2029}' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// "np.array([a, b])".
 pub fn py_vector(v: &[f64]) -> Result<String, CodegenError> {
     let items: Result<Vec<String>, _> = v.iter().map(|x| py_float(*x)).collect();
@@ -92,6 +109,13 @@ impl PyWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn comments_stay_on_one_line() {
+        assert_eq!(py_comment("Gain 1"), "Gain 1");
+        assert_eq!(py_comment("a\nimport os\r\tb"), "a import os  b");
+        assert_eq!(py_comment("a\u{2028}b\u{2029}c\u{85}d"), "a b c d");
+        assert_eq!(py_comment("ゲイン"), "ゲイン");
+    }
     #[test]
     fn floats() {
         for (v, s) in [

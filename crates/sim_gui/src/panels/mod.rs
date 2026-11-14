@@ -410,12 +410,7 @@ pub fn settings_dialog(ctx: &egui::Context, st: &mut AppState) {
 }
 
 fn solver_name(s: SolverKind) -> &'static str {
-    match s {
-        SolverKind::Auto => "auto (RK45)",
-        SolverKind::Ode45 => "ode45 (RK45)",
-        SolverKind::Ode23 => "ode23 (RK23)",
-        SolverKind::Ode15s => "ode15s (BDF)",
-    }
+    s.label()
 }
 
 /// Quick insert popup (double-click on the canvas).

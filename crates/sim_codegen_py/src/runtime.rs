@@ -14,6 +14,7 @@ mod tests {
         assert!(RUNTIME_FORMAT1.ends_with("if __name__ == \"__main__\":\n    sys.exit(main())\n"));
         assert!(!RUNTIME_FORMAT1.contains('\r') && !RUNTIME_FORMAT1.contains('\t'));
         assert!(RUNTIME_FORMAT1.lines().all(|l| !l.ends_with(' ')));
-        assert_eq!(RUNTIME_FORMAT1.lines().count(), 132);
+        // 206 lines after the fixed-step tables and integrator landed (#159).
+        assert_eq!(RUNTIME_FORMAT1.lines().count(), 206);
     }
 }

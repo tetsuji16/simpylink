@@ -3,17 +3,21 @@ use crate::expr::{parse_value, Value};
 use crate::geom::{Point, Rect};
 use crate::ids::BlockId;
 use crate::model::{Block, Orientation, System};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// How a parameter string is validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamKind {
-    Expr { shape: Shape },
+    Expr {
+        shape: Shape,
+    },
     SampleTime,
     SumSigns,
     ProductOps,
     Enum(&'static [&'static str]),
     PositiveInt,
+    /// An arbitrary text value.
+    Text,
 }
 
 /// Expected value shape.
@@ -40,6 +44,11 @@ pub struct PortCounts {
     pub outputs: u32,
 }
 
+/// Reserved input-port count parameter for opaque imported blocks.
+pub const OPAQUE_INPUTS: &str = "__opaque_inputs";
+/// Reserved output-port count parameter for opaque imported blocks.
+pub const OPAQUE_OUTPUTS: &str = "__opaque_outputs";
+
 /// Port count function.
 pub type PortsFn = fn(&BTreeMap<String, String>) -> Result<PortCounts, String>;
 
@@ -56,13 +65,16 @@ pub struct BlockSpec {
 }
 
 /// Library headings in display order.
-pub const LIBRARIES: [&str; 6] = [
+pub const LIBRARIES: [&str; 9] = [
     "Sources",
     "Sinks",
     "Math Operations",
     "Continuous",
     "Discrete",
+    "Discontinuities",
+    "Logic and Bit Operations",
     "Ports & Subsystems",
+    "Signal Routing",
 ];
 
 const fn p(
@@ -178,17 +190,143 @@ fn product_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
         outputs: 1,
     })
 }
-fn scope_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
-    let n = match p.get("NumInputPorts") {
-        None => 1,
-        Some(s) => s
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "must be a positive integer".to_string())?,
-    };
+fn math_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("exp");
+    Ok(PortCounts {
+        inputs: if matches!(op, "pow" | "hypot" | "rem" | "mod") {
+            2
+        } else {
+            1
+        },
+        outputs: 1,
+    })
+}
+
+fn trig_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("sin");
+    Ok(PortCounts {
+        inputs: if op == "atan2" { 2 } else { 1 },
+        outputs: 1,
+    })
+}
+
+/// Largest number of ports a variable-port block (Mux, Demux, MinMax, Scope) may have.
+///
+/// Validation, drawing and code generation loop over every port, so an unbounded
+/// count (`Inputs = 4000000000`) would hang the application.
+pub const MAX_PORTS: u32 = 256;
+
+/// Parses a port-count parameter: an integer in `1..=MAX_PORTS`, or `default` when absent.
+fn port_count(raw: Option<&String>, default: u32) -> Result<u32, String> {
+    let Some(s) = raw else { return Ok(default) };
+    let n = s
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "must be a positive integer".to_string())?;
     if n == 0 {
         return Err("must be a positive integer".into());
     }
+    if n > MAX_PORTS {
+        return Err(format!("must be at most {MAX_PORTS}"));
+    }
+    Ok(n)
+}
+
+fn mux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = port_count(p.get("Inputs"), 2)?;
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// `Inputs` of MinMax; the default is 1, not 2 (#169).
+fn minmax_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = port_count(p.get("Inputs"), 1)?;
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// Inputs of Relational Operator: the type checks take one input (#170).
+fn relational_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or(">=");
+    Ok(PortCounts {
+        inputs: if matches!(op, "isInf" | "isNaN" | "isFinite") {
+            1
+        } else {
+            2
+        },
+        outputs: 1,
+    })
+}
+
+/// Inputs of Logical Operator: NOT takes one, everything else `Inputs` (#170).
+fn logic_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let op = p.get("Operator").map(String::as_str).unwrap_or("AND");
+    if op == "NOT" {
+        return Ok(PortCounts {
+            inputs: 1,
+            outputs: 1,
+        });
+    }
+    let n = port_count(p.get("Inputs"), 2)?;
+    Ok(PortCounts {
+        inputs: n,
+        outputs: 1,
+    })
+}
+
+/// Output widths of a Demux: a scalar `Outputs` gives that many equal parts.
+pub fn demux_widths(outputs: &str) -> Result<Vec<usize>, String> {
+    let bad = || "Outputs must be a positive integer or a vector of positive integers".to_string();
+    let v = parse_value(outputs).map_err(|_| bad())?;
+    let widths: Vec<usize> = match (v.as_scalar(), v.as_vector()) {
+        (Some(p), _) => {
+            if p < 1.0 || p.fract() != 0.0 {
+                return Err(bad());
+            }
+            vec![p as usize]
+        }
+        (None, Some(items)) => items
+            .iter()
+            .map(|x| {
+                if *x < 1.0 || x.fract() != 0.0 {
+                    Err(bad())
+                } else {
+                    Ok(*x as usize)
+                }
+            })
+            .collect::<Result<Vec<usize>, String>>()?,
+        _ => return Err(bad()),
+    };
+    if widths.is_empty() {
+        return Err(bad());
+    }
+    Ok(widths)
+}
+
+fn demux_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let raw = p.get("Outputs").map(String::as_str).unwrap_or("2");
+    let widths = demux_widths(raw)?;
+    // A scalar `Outputs` is the number of equal outputs; a vector lists each width.
+    let outputs = match parse_value(raw) {
+        Ok(v) => match v.as_scalar() {
+            Some(n) => n,
+            None => widths.len() as f64,
+        },
+        Err(_) => return Err("Outputs must be a positive integer or a vector".into()),
+    };
+    if outputs > f64::from(MAX_PORTS) {
+        return Err(format!("Outputs must be at most {MAX_PORTS}"));
+    }
+    let outputs = outputs as u32;
+    Ok(PortCounts { inputs: 1, outputs })
+}
+
+fn scope_ports(p: &BTreeMap<String, String>) -> Result<PortCounts, String> {
+    let n = port_count(p.get("NumInputPorts"), 1)?;
     Ok(PortCounts {
         inputs: n,
         outputs: 0,
@@ -202,7 +340,7 @@ static REGISTRY: &[BlockSpec] = &[
         library: "Sources",
         default_size: (30.0, 30.0),
         params: &[
-            p("Value", "Constant value", "1", SCALAR),
+            p("Value", "Constant value", "1", MATRIX),
             p("SampleTime", "Sample time", "inf", ST),
         ],
         ports: ports_0_1,
@@ -230,7 +368,7 @@ static REGISTRY: &[BlockSpec] = &[
         library: "Math Operations",
         default_size: (30.0, 30.0),
         params: &[
-            p("Gain", "Gain", "1", SCALAR),
+            p("Gain", "Gain", "1", MATRIX),
             p("SampleTime", "Sample time (-1 for inherited)", "-1", ST),
         ],
         ports: ports_1_1,
@@ -506,6 +644,265 @@ static REGISTRY: &[BlockSpec] = &[
         base_name: "Switch",
         description: "Pass input 1 or input 3 depending on input 2 (no zero-crossing detection)",
     },
+    BlockSpec {
+        block_type: "Ground",
+        display_name: "Ground",
+        library: "Sources",
+        default_size: (20.0, 20.0),
+        params: &[],
+        ports: ports_0_1,
+        base_name: "Ground",
+        description: "Output a constant zero",
+    },
+    BlockSpec {
+        block_type: "Terminator",
+        display_name: "Terminator",
+        library: "Sinks",
+        default_size: (20.0, 20.0),
+        params: &[],
+        ports: ports_1_0,
+        base_name: "Terminator",
+        description: "Terminate an unused signal",
+    },
+    BlockSpec {
+        block_type: "ZeroOrderHold",
+        display_name: "Zero-Order Hold",
+        library: "Discrete",
+        default_size: (35.0, 34.0),
+        params: &[p("SampleTime", "Sample time (-1 for inherited)", "-1", ST)],
+        ports: ports_1_1,
+        base_name: "Zero-Order Hold",
+        description: "Sample the input at the sample time and hold it",
+    },
+    BlockSpec {
+        block_type: "Trigonometry",
+        display_name: "Trigonometric Function",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[
+            p(
+                "Operator",
+                "Function",
+                "sin",
+                ParamKind::Enum(&[
+                    "sin",
+                    "cos",
+                    "tan",
+                    "asin",
+                    "acos",
+                    "atan",
+                    "atan2",
+                    "sinh",
+                    "cosh",
+                    "tanh",
+                    "asinh",
+                    "acosh",
+                    "atanh",
+                    "sincos",
+                    "cos + jsin",
+                ]),
+            ),
+            p(
+                "ApproximationMethod",
+                "Approximation method",
+                "None",
+                ParamKind::Enum(&["None", "CORDIC"]),
+            ),
+        ],
+        ports: trig_ports,
+        base_name: "Trigonometric Function",
+        description: "Trigonometric and hyperbolic functions",
+    },
+    BlockSpec {
+        block_type: "Signum",
+        display_name: "Sign",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[],
+        ports: ports_1_1,
+        base_name: "Sign",
+        description: "Sign of the input (-1, 0 or 1)",
+    },
+    BlockSpec {
+        block_type: "Math",
+        display_name: "Math Function",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[p(
+            "Operator",
+            "Function",
+            "exp",
+            ParamKind::Enum(&[
+                "exp",
+                "log",
+                "10^u",
+                "log10",
+                "magnitude^2",
+                "square",
+                "sqrt",
+                "pow",
+                "conj",
+                "reciprocal",
+                "hypot",
+                "rem",
+                "mod",
+                "transpose",
+                "hermitian",
+            ]),
+        )],
+        ports: math_ports,
+        base_name: "Math Function",
+        description: "Mathematical functions",
+    },
+    BlockSpec {
+        block_type: "Sqrt",
+        display_name: "Sqrt",
+        library: "Math Operations",
+        default_size: (30.0, 30.0),
+        params: &[p(
+            "Operator",
+            "Function",
+            "sqrt",
+            ParamKind::Enum(&["sqrt", "signedSqrt", "rSqrt"]),
+        )],
+        ports: ports_1_1,
+        base_name: "Sqrt",
+        description: "Square root (also signed and reciprocal)",
+    },
+    BlockSpec {
+        block_type: "MinMax",
+        display_name: "MinMax",
+        library: "Math Operations",
+        default_size: (30.0, 40.0),
+        params: &[
+            p(
+                "Function",
+                "Function",
+                "min",
+                ParamKind::Enum(&["min", "max"]),
+            ),
+            p(
+                "Inputs",
+                "Number of input ports",
+                "1",
+                ParamKind::PositiveInt,
+            ),
+        ],
+        ports: minmax_ports,
+        base_name: "MinMax",
+        description: "Minimum or maximum of the inputs",
+    },
+    BlockSpec {
+        block_type: "DeadZone",
+        display_name: "Dead Zone",
+        library: "Discontinuities",
+        default_size: (30.0, 30.0),
+        params: &[
+            p("LowerValue", "Start of dead zone", "-0.5", SCALAR),
+            p("UpperValue", "End of dead zone", "0.5", SCALAR),
+        ],
+        ports: ports_1_1,
+        base_name: "Dead Zone",
+        description: "Zero output inside the dead zone (no zero-crossing detection)",
+    },
+    BlockSpec {
+        block_type: "RelationalOperator",
+        display_name: "Relational Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 32.0),
+        params: &[p(
+            "Operator",
+            "Relational operator",
+            ">=",
+            ParamKind::Enum(&[
+                "==", "~=", "<", "<=", ">=", ">", "isInf", "isNaN", "isFinite",
+            ]),
+        )],
+        ports: relational_ports,
+        base_name: "Relational Operator",
+        description: "Compare two signals; the output is 1.0 or 0.0",
+    },
+    BlockSpec {
+        block_type: "Logic",
+        display_name: "Logical Operator",
+        library: "Logic and Bit Operations",
+        default_size: (30.0, 31.0),
+        params: &[
+            p(
+                "Operator",
+                "Operator",
+                "AND",
+                ParamKind::Enum(&["AND", "OR", "NAND", "NOR", "XOR", "NXOR", "NOT"]),
+            ),
+            p(
+                "Inputs",
+                "Number of input ports",
+                "2",
+                ParamKind::PositiveInt,
+            ),
+        ],
+        ports: logic_ports,
+        base_name: "Logical Operator",
+        description: "Logical operation on the inputs; the output is 1.0 or 0.0",
+    },
+    BlockSpec {
+        block_type: "Mux",
+        display_name: "Mux",
+        library: "Signal Routing",
+        default_size: (5.0, 40.0),
+        params: &[p("Inputs", "Number of inputs", "2", ParamKind::PositiveInt)],
+        ports: mux_ports,
+        base_name: "Mux",
+        description: "Combine inputs into one vector",
+    },
+    BlockSpec {
+        block_type: "Demux",
+        display_name: "Demux",
+        library: "Signal Routing",
+        default_size: (5.0, 40.0),
+        params: &[p("Outputs", "Number of outputs", "2", VECTOR)],
+        ports: demux_ports,
+        base_name: "Demux",
+        description: "Split a vector into several outputs",
+    },
+    BlockSpec {
+        block_type: "Goto",
+        display_name: "Goto",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[
+            p("GotoTag", "Tag", "A", ParamKind::Text),
+            p(
+                "TagVisibility",
+                "Tag visibility",
+                "local",
+                ParamKind::Enum(&["local", "scoped", "global"]),
+            ),
+        ],
+        ports: ports_1_0,
+        base_name: "Goto",
+        description: "Route a signal using a tag",
+    },
+    BlockSpec {
+        block_type: "From",
+        display_name: "From",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[p("GotoTag", "Goto tag", "A", ParamKind::Text)],
+        ports: ports_0_1,
+        base_name: "From",
+        description: "Receive a signal using a tag",
+    },
+    BlockSpec {
+        block_type: "GotoTagVisibility",
+        display_name: "Goto Tag Visibility",
+        library: "Signal Routing",
+        default_size: (40.0, 20.0),
+        params: &[p("GotoTag", "Goto tag", "A", ParamKind::Text)],
+        ports: ports_0_0,
+        base_name: "Goto Tag Visibility",
+        description: "Define the scope of a Goto tag",
+    },
 ];
 
 /// All block specs.
@@ -520,8 +917,31 @@ pub fn spec(block_type: &str) -> Option<&'static BlockSpec> {
 
 /// Port counts of a block.
 pub fn port_counts(block: &Block) -> Result<PortCounts, String> {
-    let s = spec(&block.block_type)
-        .ok_or_else(|| format!("unknown block type '{}'", block.block_type))?;
+    let Some(s) = spec(&block.block_type) else {
+        let input = block
+            .params
+            .get(OPAQUE_INPUTS)
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| format!("{OPAQUE_INPUTS} must be a non-negative integer"))
+            })
+            .transpose()?;
+        let output = block
+            .params
+            .get(OPAQUE_OUTPUTS)
+            .map(|v| {
+                v.parse::<u32>()
+                    .map_err(|_| format!("{OPAQUE_OUTPUTS} must be a non-negative integer"))
+            })
+            .transpose()?;
+        if input.is_some() || output.is_some() {
+            return Ok(PortCounts {
+                inputs: input.unwrap_or(0),
+                outputs: output.unwrap_or(0),
+            });
+        }
+        return Err(format!("unknown block type '{}'", block.block_type));
+    };
     if let Some(sys) = &block.system {
         let n = |t: &str| sys.blocks.iter().filter(|b| b.block_type == t).count() as u32;
         return Ok(PortCounts {
@@ -535,6 +955,7 @@ pub fn port_counts(block: &Block) -> Result<PortCounts, String> {
 /// Validates a parameter string.
 pub fn validate_param(kind: ParamKind, value: &str) -> Result<(), String> {
     match kind {
+        ParamKind::Text => Ok(()),
         ParamKind::Expr { shape } => {
             let v = parse_value(value).map_err(|e| e.to_string())?;
             match shape {
@@ -647,6 +1068,29 @@ pub fn default_name(system: &System, s: &BlockSpec) -> String {
     unique_block_name(system, s.base_name)
 }
 
+/// Smallest positive port number not used by blocks of `block_type` in `sys`.
+///
+/// Port numbers of a subsystem must stay `1..=count` without gaps, so a new Inport or
+/// Outport takes the lowest free number instead of "number of blocks + 1" (#196).
+fn free_port_number(sys: &System, block_type: &str) -> u32 {
+    let used: BTreeSet<u32> = sys
+        .blocks
+        .iter()
+        .filter(|b| b.block_type == block_type)
+        .filter_map(|b| b.params.get("Port"))
+        .filter_map(|v| v.trim().parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .collect();
+    let mut next = 1;
+    for n in used {
+        if n > next {
+            break;
+        }
+        next = next.saturating_add(1);
+    }
+    next
+}
+
 /// New block with default parameters at `top_left`.
 pub fn new_block(
     system: &System,
@@ -670,12 +1114,7 @@ pub fn new_block(
         system: None,
     };
     if block_type == "Inport" || block_type == "Outport" {
-        let n = system
-            .blocks
-            .iter()
-            .filter(|x| x.block_type == block_type)
-            .count()
-            + 1;
+        let n = free_port_number(system, block_type);
         b.params.insert("Port".into(), n.to_string());
     }
     Ok(b)
@@ -684,6 +1123,7 @@ pub fn new_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     fn blk(t: &str, params: &[(&str, &str)]) -> Block {
         Block {
             sid: BlockId(1),
@@ -743,6 +1183,50 @@ mod tests {
             Err("unknown block type 'Nope'".into())
         );
     }
+
+    #[test]
+    fn port_counts_are_limited() {
+        let pc = |b: Block| port_counts(&b).map(|p| (p.inputs, p.outputs));
+        assert_eq!(pc(blk("Mux", &[("Inputs", "256")])), Ok((256, 1)));
+        for (ty, key) in [
+            ("Mux", "Inputs"),
+            ("MinMax", "Inputs"),
+            ("Scope", "NumInputPorts"),
+        ] {
+            for raw in ["257", "4000000000"] {
+                assert_eq!(
+                    pc(blk(ty, &[(key, raw)])),
+                    Err("must be at most 256".into()),
+                    "{ty} {key}={raw}"
+                );
+            }
+        }
+        assert_eq!(pc(blk("Demux", &[("Outputs", "256")])), Ok((1, 256)));
+        for raw in ["257", "1e9"] {
+            assert_eq!(
+                pc(blk("Demux", &[("Outputs", raw)])),
+                Err("Outputs must be at most 256".into())
+            );
+        }
+    }
+
+    #[test]
+    fn ground_and_terminator_specs() {
+        let pc = |b: Block| port_counts(&b).map(|p| (p.inputs, p.outputs));
+        let ground = spec("Ground").unwrap();
+        assert_eq!(ground.library, "Sources");
+        assert_eq!(ground.default_size, (20.0, 20.0));
+        assert!(ground.params.is_empty());
+        assert_eq!(ground.base_name, "Ground");
+        assert_eq!(pc(blk("Ground", &[])), Ok((0, 1)));
+
+        let terminator = spec("Terminator").unwrap();
+        assert_eq!(terminator.library, "Sinks");
+        assert_eq!(terminator.default_size, (20.0, 20.0));
+        assert!(terminator.params.is_empty());
+        assert_eq!(terminator.base_name, "Terminator");
+        assert_eq!(pc(blk("Terminator", &[])), Ok((1, 0)));
+    }
     #[test]
     fn params() {
         let ok = |k, v| validate_param(k, v).is_ok();
@@ -778,5 +1262,29 @@ mod tests {
         assert_eq!(g.params.len(), 2);
         assert_eq!(g.params["Gain"], "5");
         assert_eq!(g.params["SampleTime"], "-1");
+    }
+}
+
+#[cfg(test)]
+mod logic_port_limits {
+    use super::*;
+
+    /// Variable input counts respect the allocation bound; NOT always has one input.
+    #[test]
+    fn logic_uses_bounded_input_counts_except_for_not() {
+        let mut p = BTreeMap::new();
+        assert_eq!(logic_ports(&p).unwrap().inputs, 2);
+        for op in ["AND", "OR", "NAND", "NOR", "XOR", "NXOR"] {
+            p.insert("Operator".into(), op.into());
+            p.insert("Inputs".into(), MAX_PORTS.to_string());
+            assert_eq!(logic_ports(&p).unwrap().inputs, MAX_PORTS);
+            for bad in ["257", "4294967295", "0", "1.5", "bad"] {
+                p.insert("Inputs".into(), bad.into());
+                assert!(logic_ports(&p).is_err(), "{op}: {bad}");
+            }
+        }
+        p.insert("Operator".into(), "NOT".into());
+        p.insert("Inputs".into(), "4294967295".into());
+        assert_eq!(logic_ports(&p).unwrap().inputs, 1);
     }
 }

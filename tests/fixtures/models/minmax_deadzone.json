@@ -1,0 +1,125 @@
+{
+  "format": "simpylink-model",
+  "format_version": 1,
+  "name": "minmax_deadzone",
+  "config": {
+    "start_time": 0.0,
+    "stop_time": 2.0,
+    "solver": "auto",
+    "rel_tol": 1e-6,
+    "abs_tol": 1e-9,
+    "max_step": null,
+    "output_step": 0.5
+  },
+  "next_sid": 7,
+  "next_line_id": 7,
+  "root": {
+    "blocks": [
+      {
+        "sid": 1,
+        "block_type": "Clock",
+        "name": "Clock",
+        "position": [20.0, 100.0, 50.0, 130.0],
+        "orientation": "right",
+        "params": {}
+      },
+      {
+        "sid": 2,
+        "block_type": "Constant",
+        "name": "Constant",
+        "position": [20.0, 160.0, 50.0, 190.0],
+        "orientation": "right",
+        "params": {
+          "Value": "0.5",
+          "SampleTime": "inf"
+        }
+      },
+      {
+        "sid": 3,
+        "block_type": "MinMax",
+        "name": "MinMax",
+        "position": [120.0, 100.0, 150.0, 140.0],
+        "orientation": "right",
+        "params": {
+          "Function": "max",
+          "Inputs": "2"
+        }
+      },
+      {
+        "sid": 4,
+        "block_type": "Scope",
+        "name": "Scope",
+        "position": [320.0, 100.0, 350.0, 180.0],
+        "orientation": "right",
+        "params": {
+          "NumInputPorts": "2"
+        }
+      },
+      {
+        "sid": 5,
+        "block_type": "Bias",
+        "name": "Bias",
+        "position": [120.0, 220.0, 150.0, 250.0],
+        "orientation": "right",
+        "params": {
+          "Bias": "-1"
+        }
+      },
+      {
+        "sid": 6,
+        "block_type": "DeadZone",
+        "name": "Dead Zone",
+        "position": [220.0, 220.0, 250.0, 250.0],
+        "orientation": "right",
+        "params": {
+          "LowerValue": "-0.25",
+          "UpperValue": "0.25"
+        }
+      }
+    ],
+    "lines": [
+      {
+        "id": 1,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 2,
+        "src": { "block": 2, "port": 1 },
+        "points": [],
+        "dst": { "block": 3, "port": 2 },
+        "branches": []
+      },
+      {
+        "id": 3,
+        "src": { "block": 3, "port": 1 },
+        "points": [],
+        "dst": { "block": 4, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 4,
+        "src": { "block": 1, "port": 1 },
+        "points": [],
+        "dst": { "block": 5, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 5,
+        "src": { "block": 5, "port": 1 },
+        "points": [],
+        "dst": { "block": 6, "port": 1 },
+        "branches": []
+      },
+      {
+        "id": 6,
+        "src": { "block": 6, "port": 1 },
+        "points": [],
+        "dst": { "block": 4, "port": 2 },
+        "branches": []
+      }
+    ]
+  }
+}

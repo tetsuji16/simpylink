@@ -1,4 +1,5 @@
 //! Numeric parameter expressions (subset of MATLAB literal syntax).
+use crate::workspace::Workspace;
 
 /// Row-major matrix.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +85,10 @@ enum Tok {
     Star,
     Slash,
     Caret,
+    DotStar,
+    DotSlash,
+    DotCaret,
+    Quote,
     LParen,
     RParen,
     LBracket,
@@ -146,7 +151,28 @@ fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
+                while i < b.len()
+                    && b[i] == b'.'
+                    && i + 1 < b.len()
+                    && (b[i + 1].is_ascii_alphabetic() || b[i + 1] == b'_')
+                {
+                    i += 1;
+                    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                        i += 1;
+                    }
+                }
                 Tok::Ident(src[start..i].to_string())
+            } else if c == b'.'
+                && i + 1 < b.len()
+                && (b[i + 1] == b'*' || b[i + 1] == b'/' || b[i + 1] == b'^')
+            {
+                i += 2;
+                match b[start + 1] {
+                    b'*' => Tok::DotStar,
+                    b'/' => Tok::DotSlash,
+                    b'^' => Tok::DotCaret,
+                    _ => unreachable!(),
+                }
             } else {
                 i += 1;
                 match c {
@@ -155,6 +181,7 @@ fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
                     b'*' => Tok::Star,
                     b'/' => Tok::Slash,
                     b'^' => Tok::Caret,
+                    b'\'' => Tok::Quote,
                     b'(' => Tok::LParen,
                     b')' => Tok::RParen,
                     b'[' => Tok::LBracket,
@@ -182,14 +209,23 @@ fn lex(src: &str) -> Result<Vec<Token>, ExprError> {
     Ok(out)
 }
 
-struct Parser {
+struct Parser<'w> {
     toks: Vec<Token>,
+    ws: &'w Workspace,
     i: usize,
     bracket_depth: usize,
     paren_depth: usize,
+    /// Current nesting of `parse_unary`; every recursive cycle passes through it.
+    depth: usize,
 }
 
-impl Parser {
+/// Deepest nesting (parentheses, brackets, unary signs, `^` chains) an expression may have.
+///
+/// The parser is recursive, so an unbounded depth would overflow the stack on a
+/// hostile parameter string such as 100 000 opening parentheses.
+pub const MAX_EXPR_DEPTH: usize = 64;
+
+impl Parser<'_> {
     fn peek(&self) -> &Token {
         &self.toks[self.i]
     }
@@ -244,10 +280,15 @@ impl Parser {
             }
             let t = self.peek().clone();
             match t.tok {
-                Tok::Star | Tok::Slash => {
+                Tok::Star | Tok::Slash | Tok::DotStar | Tok::DotSlash => {
                     self.next();
                     let r = self.parse_unary()?;
-                    v = binop(&v, &r, if t.tok == Tok::Star { '*' } else { '/' }, t.pos)?;
+                    let op = if t.tok == Tok::Star || t.tok == Tok::DotStar {
+                        '*'
+                    } else {
+                        '/'
+                    };
+                    v = binop(&v, &r, op, t.pos)?;
                 }
                 _ => break,
             }
@@ -255,6 +296,15 @@ impl Parser {
         Ok(v)
     }
     fn parse_unary(&mut self) -> Result<Value, ExprError> {
+        if self.depth >= MAX_EXPR_DEPTH {
+            return err("expression is nested too deeply", self.peek().pos);
+        }
+        self.depth += 1;
+        let v = self.parse_unary_inner();
+        self.depth -= 1;
+        v
+    }
+    fn parse_unary_inner(&mut self) -> Result<Value, ExprError> {
         let t = self.peek().clone();
         match t.tok {
             Tok::Minus => {
@@ -274,7 +324,9 @@ impl Parser {
     }
     fn parse_power(&mut self) -> Result<Value, ExprError> {
         let base = self.parse_primary()?;
-        if self.peek().tok == Tok::Caret && !self.is_element_boundary() {
+        if (self.peek().tok == Tok::Caret || self.peek().tok == Tok::DotCaret)
+            && !self.is_element_boundary()
+        {
             let t = self.next();
             let e = self.parse_unary()?;
             return binop(&base, &e, '^', t.pos);
@@ -282,15 +334,49 @@ impl Parser {
         Ok(base)
     }
     fn parse_primary(&mut self) -> Result<Value, ExprError> {
+        let mut v = self.parse_primary_atom()?;
+        while self.peek().tok == Tok::Quote {
+            self.next();
+            v = match v {
+                Value::Scalar(s) => Value::Scalar(s),
+                Value::Matrix(m) => {
+                    let mut data = vec![0.0; m.rows * m.cols];
+                    for r in 0..m.rows {
+                        for c in 0..m.cols {
+                            data[c * m.rows + r] = m.get(r, c);
+                        }
+                    }
+                    Value::Matrix(Matrix {
+                        rows: m.cols,
+                        cols: m.rows,
+                        data,
+                    })
+                }
+            };
+        }
+        Ok(v)
+    }
+    fn parse_primary_atom(&mut self) -> Result<Value, ExprError> {
         let t = self.next();
         match t.tok {
             Tok::Num(v) => Ok(Value::Scalar(v)),
-            Tok::Ident(ref s) => match s.as_str() {
-                "pi" => Ok(Value::Scalar(std::f64::consts::PI)),
-                "inf" | "Inf" => Ok(Value::Scalar(f64::INFINITY)),
-                "eps" => Ok(Value::Scalar(f64::EPSILON)),
-                _ => err(format!("unknown identifier '{s}'"), t.pos),
-            },
+            Tok::Ident(ref s) => {
+                if self.peek().tok == Tok::LParen && !self.is_element_boundary() {
+                    if self.ws.get(s).is_some() {
+                        return err("indexing is not supported", t.pos);
+                    }
+                    self.parse_function_call(s, t.pos)
+                } else if let Some(v) = self.ws.get(s) {
+                    Ok(v.clone())
+                } else {
+                    match s.as_str() {
+                        "pi" => Ok(Value::Scalar(std::f64::consts::PI)),
+                        "inf" | "Inf" => Ok(Value::Scalar(f64::INFINITY)),
+                        "eps" => Ok(Value::Scalar(f64::EPSILON)),
+                        _ => err(format!("unknown identifier '{s}'"), t.pos),
+                    }
+                }
+            }
             Tok::LParen => {
                 self.paren_depth += 1;
                 let v = self.parse_expr()?;
@@ -305,6 +391,34 @@ impl Parser {
             Tok::End => err("unexpected end of expression", t.pos),
             _ => err("unexpected token", t.pos),
         }
+    }
+    fn parse_function_call(&mut self, name: &str, pos: usize) -> Result<Value, ExprError> {
+        self.next(); // consume LParen
+        self.paren_depth += 1;
+        let mut args: Vec<f64> = vec![];
+        if self.peek().tok != Tok::RParen {
+            loop {
+                let arg_pos = self.peek().pos;
+                let val = self.parse_expr()?;
+                let scalar = val.as_scalar().ok_or_else(|| ExprError {
+                    message: format!("function '{name}' expects scalar arguments"),
+                    pos: arg_pos,
+                })?;
+                args.push(scalar);
+                if self.peek().tok == Tok::Comma {
+                    self.next();
+                    continue;
+                }
+                break;
+            }
+        }
+        if self.peek().tok != Tok::RParen {
+            return err("expected ')'", self.peek().pos);
+        }
+        self.next(); // consume RParen
+        self.paren_depth -= 1;
+
+        eval_function(name, &args, pos)
     }
     fn parse_matrix(&mut self, open_pos: usize) -> Result<Value, ExprError> {
         let saved_paren = self.paren_depth;
@@ -361,6 +475,84 @@ impl Parser {
     }
 }
 
+const ONE_ARG_FUNCS: &[&str] = &[
+    "sin", "cos", "tan", "asin", "acos", "atan", "sinh", "cosh", "tanh", "exp", "log", "log10",
+    "log2", "sqrt", "abs", "sign", "floor", "ceil", "round", "fix",
+];
+
+const TWO_ARG_FUNCS: &[&str] = &["atan2", "mod", "rem", "min", "max", "hypot", "power"];
+
+fn eval_function(name: &str, args: &[f64], pos: usize) -> Result<Value, ExprError> {
+    if ONE_ARG_FUNCS.contains(&name) {
+        if args.len() != 1 {
+            return err(format!("function '{name}' expects 1 argument"), pos);
+        }
+        let x = args[0];
+        let res = match name {
+            "sin" => x.sin(),
+            "cos" => x.cos(),
+            "tan" => x.tan(),
+            "asin" => x.asin(),
+            "acos" => x.acos(),
+            "atan" => x.atan(),
+            "sinh" => x.sinh(),
+            "cosh" => x.cosh(),
+            "tanh" => x.tanh(),
+            "exp" => x.exp(),
+            "log" => x.ln(),
+            "log10" => x.log10(),
+            "log2" => x.log2(),
+            "sqrt" => x.sqrt(),
+            "abs" => x.abs(),
+            "sign" => {
+                if x < 0.0 {
+                    -1.0
+                } else if x > 0.0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            "floor" => x.floor(),
+            "ceil" => x.ceil(),
+            "round" => x.round(),
+            "fix" => x.trunc(),
+            _ => unreachable!(),
+        };
+        Ok(Value::Scalar(res))
+    } else if TWO_ARG_FUNCS.contains(&name) {
+        if args.len() != 2 {
+            return err(format!("function '{name}' expects 2 arguments"), pos);
+        }
+        let (a, b) = (args[0], args[1]);
+        let res = match name {
+            "atan2" => a.atan2(b),
+            "mod" => {
+                if b == 0.0 {
+                    a
+                } else {
+                    a - (a / b).floor() * b
+                }
+            }
+            "rem" => {
+                if b == 0.0 {
+                    a
+                } else {
+                    a - (a / b).trunc() * b
+                }
+            }
+            "min" => a.min(b),
+            "max" => a.max(b),
+            "hypot" => a.hypot(b),
+            "power" => a.powf(b),
+            _ => unreachable!(),
+        };
+        Ok(Value::Scalar(res))
+    } else {
+        err(format!("unknown function '{name}'"), pos)
+    }
+}
+
 fn binop(a: &Value, b: &Value, op: char, pos: usize) -> Result<Value, ExprError> {
     match (a, b) {
         (Value::Scalar(x), Value::Scalar(y)) => Ok(Value::Scalar(match op {
@@ -381,17 +573,46 @@ fn has_nan(v: &Value) -> bool {
     }
 }
 
-/// Evaluates a parameter expression.
+/// Identifiers an expression refers to (variables), excluding function names and built-in constants.
+pub fn identifiers(src: &str) -> Result<std::collections::BTreeSet<String>, ExprError> {
+    let toks = lex(src)?;
+    let mut set = std::collections::BTreeSet::new();
+    for i in 0..toks.len() {
+        if let Tok::Ident(ref name) = toks[i].tok {
+            // Check if next token is LParen (function call)
+            if i + 1 < toks.len() && toks[i + 1].tok == Tok::LParen {
+                continue;
+            }
+            // Check if built-in constant
+            match name.as_str() {
+                "pi" | "inf" | "Inf" | "eps" => continue,
+                _ => {
+                    set.insert(name.clone());
+                }
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// Evaluates a parameter expression (no variables).
 pub fn parse_value(src: &str) -> Result<Value, ExprError> {
+    parse_value_in(src, &Workspace::new())
+}
+
+/// Evaluates a parameter expression; identifiers are looked up in `ws` first (#94).
+pub fn parse_value_in(src: &str, ws: &Workspace) -> Result<Value, ExprError> {
     let toks = lex(src)?;
     if toks.len() == 1 {
         return err("empty expression", 0);
     }
     let mut p = Parser {
         toks,
+        ws,
         i: 0,
         bracket_depth: 0,
         paren_depth: 0,
+        depth: 0,
     };
     let v = p.parse_expr()?;
     if p.peek().tok != Tok::End {
@@ -406,6 +627,19 @@ pub fn parse_value(src: &str) -> Result<Value, ExprError> {
 #[cfg(test)]
 #[allow(clippy::approx_constant)] // expected values are written out on purpose
 mod tests {
+    #[test]
+    fn workspace_lookup() {
+        let mut ws = crate::workspace::Workspace::new();
+        ws.insert("Kp", Value::Scalar(2.0));
+        assert_eq!(parse_value_in("Kp*3", &ws), Ok(Value::Scalar(6.0)));
+        assert!(parse_value("Kp").is_err());
+        // variables shadow built-in constants only if defined (pi is reserved, so never).
+        assert_eq!(
+            parse_value_in("pi", &ws),
+            Ok(Value::Scalar(std::f64::consts::PI))
+        );
+    }
+
     use super::*;
     fn m(rows: usize, cols: usize, d: &[f64]) -> Value {
         Value::Matrix(Matrix {
@@ -440,9 +674,53 @@ mod tests {
             ("[2*pi (1+1)]", m(1, 2, &[6.283185307179586, 2.0])),
             ("[]", m(0, 0, &[])),
             ("[5]", m(1, 1, &[5.0])),
+            ("sin(pi/2)", Value::Scalar(1.0)),
+            ("atan2(1, 1)", Value::Scalar(std::f64::consts::FRAC_PI_4)),
+            ("mod(-1, 3)", Value::Scalar(2.0)),
+            ("rem(-1, 3)", Value::Scalar(-1.0)),
+            ("mod(5, 0)", Value::Scalar(5.0)),
+            ("max(2, 3) + min(2, 3)", Value::Scalar(5.0)),
+            ("round(2.5)", Value::Scalar(3.0)),
+            ("round(-2.5)", Value::Scalar(-3.0)),
+            ("fix(-2.7)", Value::Scalar(-2.0)),
+            ("sign(-3)", Value::Scalar(-1.0)),
+            ("2 .* 3", Value::Scalar(6.0)),
+            ("8 ./ 2", Value::Scalar(4.0)),
+            ("2 .^ 3", Value::Scalar(8.0)),
+            ("[1 2 3]'", m(3, 1, &[1.0, 2.0, 3.0])),
+            ("[1 2; 3 4]'", m(2, 2, &[1.0, 3.0, 2.0, 4.0])),
+            ("sqrt(2)/2", Value::Scalar(std::f64::consts::FRAC_1_SQRT_2)),
+            ("[sin(0) cos(0)]", m(1, 2, &[0.0, 1.0])),
         ];
         for (src, want) in cases {
             assert_eq!(parse_value(src), Ok(want), "input {src:?}");
+        }
+
+        let mut ws = Workspace::new();
+        ws.insert("az.Umax", Value::Scalar(1.5));
+        assert_eq!(parse_value_in("az.Umax * 2", &ws), Ok(Value::Scalar(3.0)));
+    }
+    #[test]
+    fn identifiers_extraction() {
+        let idents = identifiers("Kp*sin(t0) + pi + az.U").unwrap();
+        let expected: std::collections::BTreeSet<String> =
+            ["Kp", "t0", "az.U"].into_iter().map(String::from).collect();
+        assert_eq!(idents, expected);
+    }
+    #[test]
+    fn nesting_is_limited() {
+        // Deep but legal.
+        let ok = format!("{}1{}", "(".repeat(30), ")".repeat(30));
+        assert_eq!(parse_value(&ok), Ok(Value::Scalar(1.0)));
+        // Hostile inputs must fail with an error, not overflow the stack.
+        for src in [
+            format!("{}1", "(".repeat(100_000)),
+            format!("{}1", "-".repeat(100_000)),
+            format!("{}1", "2^".repeat(100_000)),
+            format!("{}1", "sin(".repeat(100_000)),
+        ] {
+            let e = parse_value(&src).unwrap_err();
+            assert_eq!(e.message, "expression is nested too deeply");
         }
     }
     #[test]
@@ -461,6 +739,15 @@ mod tests {
             ("1e", "invalid number", Some(0)),
             ("3 4", "unexpected token", Some(2)),
             ("2 $", "unexpected character '$'", Some(2)),
+            ("foo(1)", "unknown function 'foo'", Some(0)),
+            ("sin(1, 2)", "function 'sin' expects 1 argument", Some(0)),
+            (
+                "sin([1 2])",
+                "function 'sin' expects scalar arguments",
+                Some(4),
+            ),
+            ("sqrt(-1)", "expression evaluates to NaN", None),
+            ("a.", "unexpected character", None),
         ];
         for (src, msg, pos) in cases {
             let e = parse_value(src).unwrap_err();
@@ -472,6 +759,11 @@ mod tests {
         for src in ["[", "]", "(((", "-"] {
             assert!(parse_value(src).is_err(), "{src}");
         }
+
+        let mut ws = Workspace::new();
+        ws.insert("Kp", Value::Scalar(2.0));
+        let e = parse_value_in("Kp(1)", &ws).unwrap_err();
+        assert!(e.message.contains("indexing is not supported"), "{e:?}");
     }
     #[test]
     fn value_methods() {

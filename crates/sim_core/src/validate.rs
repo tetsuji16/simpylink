@@ -2,7 +2,7 @@
 use crate::diag::{codes::*, Diagnostic, Location};
 use crate::ids::{BlockId, LineId};
 use crate::library::{port_counts, spec, validate_param, PortCounts};
-use crate::model::{Branch, Line, Model, PortRef, System};
+use crate::model::{Block, Branch, Line, Model, PortRef, System};
 use crate::path::SystemPath;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,7 +14,184 @@ pub fn validate_model(model: &Model) -> Vec<Diagnostic> {
     check_sids(&model.root, &SystemPath::root(), &mut seen, &mut out);
     let mut seen_lines = BTreeSet::new();
     check_system(&model.root, &SystemPath::root(), &mut seen_lines, &mut out);
+    check_tags(model, &mut out);
+    for loc in non_finite_geometry(model) {
+        out.push(Diagnostic::error(
+            E_NON_FINITE_GEOMETRY,
+            "block position and line points must be finite",
+            loc,
+        ));
+    }
     out
+}
+
+/// True when `s` holds a control character or a Unicode line/paragraph separator.
+///
+/// Such a name cannot be written to JSON, a `.m` script or generated Python without
+/// escaping, so it is rejected at the model level (#198).
+fn has_control_chars(s: &str) -> bool {
+    s.chars()
+        .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+}
+
+fn finite_point(p: &crate::geom::Point) -> bool {
+    p.x.is_finite() && p.y.is_finite()
+}
+
+fn finite_branches(bs: &[Branch]) -> bool {
+    bs.iter()
+        .all(|b| b.points.iter().all(finite_point) && finite_branches(&b.branches))
+}
+
+fn finite_line(l: &Line) -> bool {
+    l.points.iter().all(finite_point) && finite_branches(&l.branches)
+}
+
+/// Locations of blocks and lines whose geometry is NaN or ±Inf.
+///
+/// `serde_json` writes those as `null`, so a model saved with them cannot be loaded
+/// again; they are reported here and refused by `save_to_path` (#198).
+fn non_finite_geometry(model: &Model) -> Vec<Location> {
+    fn walk(sys: &System, path: &SystemPath, out: &mut Vec<Location>) {
+        for b in &sys.blocks {
+            let r = &b.position;
+            let finite = r.left.is_finite()
+                && r.top.is_finite()
+                && r.right.is_finite()
+                && r.bottom.is_finite();
+            if !finite {
+                out.push(Location::block(path, b.sid));
+            }
+            if let Some(c) = &b.system {
+                walk(c, &path.child(b.sid), out);
+            }
+        }
+        for l in &sys.lines {
+            if !finite_line(l) {
+                out.push(Location::line(path, l.id));
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(&model.root, &SystemPath::root(), &mut out);
+    out
+}
+
+/// True when any block position or line point is NaN or ±Inf.
+pub fn has_non_finite_geometry(model: &Model) -> bool {
+    !non_finite_geometry(model).is_empty()
+}
+
+fn check_tags(model: &Model, out: &mut Vec<Diagnostic>) {
+    fn collect<'a>(
+        sys: &'a System,
+        path: &SystemPath,
+        blocks: &mut Vec<(SystemPath, &'a crate::model::Block)>,
+    ) {
+        for b in &sys.blocks {
+            if matches!(b.block_type.as_str(), "Goto" | "From" | "GotoTagVisibility") {
+                blocks.push((path.clone(), b));
+            }
+            if let Some(child) = &b.system {
+                collect(child, &path.child(b.sid), blocks);
+            }
+        }
+    }
+    let mut blocks = Vec::new();
+    collect(&model.root, &SystemPath::root(), &mut blocks);
+    for (path, b) in &blocks {
+        if let Some(tag) = b.params.get("GotoTag") {
+            if has_control_chars(tag) {
+                out.push(Diagnostic::error(
+                    E_INVALID_NAME,
+                    "name must not contain control characters",
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+    }
+    let mut local = BTreeSet::new();
+    let mut global = BTreeSet::new();
+    let mut markers = BTreeSet::new();
+    for (path, b) in &blocks {
+        if b.block_type == "GotoTagVisibility" {
+            let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+            if !markers.insert((path.clone(), tag)) {
+                out.push(Diagnostic::error(
+                    E_DUPLICATE_GOTO_TAG,
+                    format!("duplicate goto tag visibility for '{tag}'"),
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+    }
+    let scope_for = |path: &SystemPath, tag: &str| {
+        let mut p = path.clone();
+        loop {
+            if markers.contains(&(p.clone(), tag)) {
+                return Some(p);
+            }
+            let sid = p.0.pop()?;
+            let parent = model.system(&p)?;
+            if parent
+                .block(sid)?
+                .params
+                .get("TreatAsAtomicUnit")
+                .is_some_and(|v| v == "on")
+            {
+                return None;
+            }
+        }
+    };
+    let mut scoped = BTreeSet::new();
+    for (path, b) in &blocks {
+        if b.block_type != "Goto" {
+            continue;
+        }
+        let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+        let visibility = b
+            .params
+            .get("TagVisibility")
+            .map(String::as_str)
+            .unwrap_or("local");
+        let duplicate = match visibility {
+            "local" => !local.insert((path.clone(), tag)),
+            "global" => !global.insert(tag),
+            "scoped" => match scope_for(path, tag) {
+                Some(scope) => !scoped.insert((scope, tag)),
+                None => {
+                    out.push(Diagnostic::error(
+                        E_INVALID_PARAM,
+                        format!("scoped goto tag '{tag}' has no visibility block"),
+                        Location::block(path, b.sid),
+                    ));
+                    false
+                }
+            },
+            _ => false,
+        };
+        if duplicate {
+            out.push(Diagnostic::error(
+                E_DUPLICATE_GOTO_TAG,
+                format!("duplicate goto tag '{tag}'"),
+                Location::block(path, b.sid),
+            ));
+        }
+    }
+    for (path, b) in &blocks {
+        if b.block_type != "From" {
+            continue;
+        }
+        let tag = b.params.get("GotoTag").map(String::as_str).unwrap_or("A");
+        let scoped_match = scope_for(path, tag).is_some_and(|scope| scoped.contains(&(scope, tag)));
+        if !local.contains(&(path.clone(), tag)) && !scoped_match && !global.contains(tag) {
+            out.push(Diagnostic::error(
+                E_UNMATCHED_FROM,
+                format!("no visible goto for tag '{tag}'"),
+                Location::block(path, b.sid),
+            ));
+        }
+    }
 }
 
 fn check_config(m: &Model, out: &mut Vec<Diagnostic>) {
@@ -101,6 +278,54 @@ fn dangling(bs: &[Branch]) -> bool {
         .any(|b| (b.dst.is_none() && b.branches.is_empty()) || dangling(&b.branches))
 }
 
+/// The `Port` number of an Inport / Outport, when it is a usable positive integer.
+///
+/// Values that are not positive integers are reported as `E_INVALID_PARAM` by
+/// `validate_param`, so they are skipped here to avoid a second diagnostic.
+fn port_number(b: &Block) -> Option<u32> {
+    b.params
+        .get("Port")?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+}
+
+/// Inport / Outport port numbers of one system: unique and `1..=count` without gaps.
+///
+/// The subsystem port order depends on these numbers, so a duplicate or a gap silently
+/// rewires the parent system (#196).
+fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>) {
+    for block_type in ["Inport", "Outport"] {
+        let mut numbers: Vec<(u32, BlockId)> = vec![];
+        let mut seen = BTreeSet::new();
+        for b in sys.blocks.iter().filter(|b| b.block_type == block_type) {
+            let Some(n) = port_number(b) else { continue };
+            if seen.insert(n) {
+                numbers.push((n, b.sid));
+            } else {
+                out.push(Diagnostic::error(
+                    E_DUPLICATE_PORT_NUMBER,
+                    format!("port number {n} is used by more than one {block_type}"),
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+        numbers.sort_unstable();
+        let count = numbers.len() as u32;
+        for (index, (n, sid)) in numbers.iter().enumerate() {
+            let expected = index as u32 + 1;
+            if *n != expected {
+                out.push(Diagnostic::error(
+                    E_PORT_NUMBER_GAP,
+                    format!("{block_type} port numbers must be 1..{count} without gaps"),
+                    Location::block(path, *sid),
+                ));
+            }
+        }
+    }
+}
+
 fn check_system(
     sys: &System,
     path: &SystemPath,
@@ -118,16 +343,37 @@ fn check_system(
                 loc.clone(),
             ));
         }
+        if b.name.is_empty() {
+            out.push(Diagnostic::error(
+                E_INVALID_NAME,
+                "name must not be empty",
+                loc.clone(),
+            ));
+        } else if has_control_chars(&b.name) {
+            out.push(Diagnostic::error(
+                E_INVALID_NAME,
+                "name must not contain control characters",
+                loc.clone(),
+            ));
+        }
         let Some(s) = spec(&b.block_type) else {
             out.push(Diagnostic::error(
                 E_UNKNOWN_BLOCK_TYPE,
                 format!("unknown block type '{}'", b.block_type),
                 loc,
             ));
+            counts.insert(
+                b.sid,
+                port_counts(b).unwrap_or(PortCounts {
+                    inputs: 0,
+                    outputs: 0,
+                }),
+            );
             continue;
         };
         for ps in s.params {
             match b.params.get(ps.name) {
+                None if b.block_type == "Goto" && ps.name == "TagVisibility" => {}
                 None => out.push(Diagnostic::error(
                     E_INVALID_PARAM,
                     format!("parameter '{}' is missing", ps.name),
@@ -220,6 +466,7 @@ fn check_system(
             check_system(c, &path.child(b.sid), seen_lines, out);
         }
     }
+    check_port_numbers(sys, path, out);
 }
 
 fn check_line(
@@ -232,6 +479,13 @@ fn check_line(
     out: &mut Vec<Diagnostic>,
 ) {
     let loc = Location::line(path, l.id);
+    if has_control_chars(&l.name) {
+        out.push(Diagnostic::error(
+            E_INVALID_NAME,
+            "name must not contain control characters",
+            loc.clone(),
+        ));
+    }
     match sys.block(l.src.block) {
         None => out.push(Diagnostic::error(
             E_LINE_SRC_MISSING,

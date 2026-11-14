@@ -39,6 +39,8 @@ pub struct IrConfig {
     pub rel_tol: f64,
     pub abs_tol: f64,
     pub max_step: Option<f64>,
+    /// Fixed step size (fixed-step solvers only, #99). `None` = auto or variable-step.
+    pub fixed_step: Option<f64>,
 }
 
 /// One signal.
@@ -47,6 +49,8 @@ pub struct IrSignal {
     pub id: SignalId,
     pub source: PortRef,
     pub var_name: String,
+    /// Number of elements (1 = scalar). Always 1 until vector signals land (#92).
+    pub width: usize,
 }
 
 /// One non-virtual block in execution order.
@@ -71,6 +75,10 @@ pub enum IrBlockKind {
     Constant {
         value: f64,
     },
+    /// Constant with two or more elements (vector signals, #161).
+    ConstantVector {
+        values: Vec<f64>,
+    },
     Step {
         time: f64,
         before: f64,
@@ -79,6 +87,18 @@ pub enum IrBlockKind {
     Gain {
         gain: f64,
     },
+    /// Gain with two or more elements (vector gains, #161).
+    GainVector {
+        gains: Vec<f64>,
+    },
+    /// Signal routing: one output built from all inputs (#161).
+    Mux {
+        widths: Vec<usize>,
+    },
+    /// Signal routing: one input split into several outputs (#161).
+    Demux {
+        widths: Vec<usize>,
+    },
     Sum {
         signs: Vec<i8>,
     },
@@ -86,6 +106,39 @@ pub enum IrBlockKind {
         ops: Vec<char>,
     },
     Abs,
+    /// Trigonometric or hyperbolic function (#167).
+    Trig {
+        op: TrigOp,
+    },
+    /// Sign of the input (#167).
+    Signum,
+    /// Math Function operator (#168).
+    MathFn {
+        op: MathOp,
+    },
+    /// Sqrt block operator (#168).
+    Sqrt {
+        op: SqrtOp,
+    },
+    /// Minimum or maximum of `inputs` signals (#169).
+    MinMax {
+        is_max: bool,
+        inputs: u32,
+    },
+    /// Dead Zone with `lower` and `upper` bounds (#169).
+    DeadZone {
+        lower: f64,
+        upper: f64,
+    },
+    /// Relational operator (#170).
+    Relational {
+        op: RelOp,
+    },
+    /// Logical operator on `inputs` signals (#170).
+    Logic {
+        op: LogicOp,
+        inputs: u32,
+    },
     Bias {
         bias: f64,
     },
@@ -99,6 +152,8 @@ pub enum IrBlockKind {
         threshold: f64,
     },
     Scope,
+    /// Consume an input signal without producing an output.
+    Terminator,
     Outport {
         port: u32,
     },
@@ -121,6 +176,8 @@ pub enum IrBlockKind {
     UnitDelay {
         x0: f64,
     },
+    /// Sample the input at the sample time and hold it (#166).
+    ZeroOrderHold,
     DiscreteIntegrator {
         gain: f64,
         x0: f64,
@@ -146,12 +203,14 @@ impl IrBlockKind {
         match self {
             IrBlockKind::TransferFcn { d, .. } | IrBlockKind::StateSpace { d, .. } => *d != 0.0,
             IrBlockKind::Constant { .. }
+            | IrBlockKind::ConstantVector { .. }
             | IrBlockKind::Step { .. }
             | IrBlockKind::Integrator { .. }
             | IrBlockKind::UnitDelay { .. }
             | IrBlockKind::DiscreteIntegrator { .. }
             | IrBlockKind::SineWave { .. }
             | IrBlockKind::Clock => false,
+            IrBlockKind::Terminator => true,
             _ => true,
         }
     }
@@ -167,14 +226,129 @@ impl IrBlockKind {
     /// Number of discrete states.
     pub fn num_disc_states(&self) -> usize {
         match self {
-            IrBlockKind::UnitDelay { .. } | IrBlockKind::DiscreteIntegrator { .. } => 1,
+            IrBlockKind::UnitDelay { .. }
+            | IrBlockKind::DiscreteIntegrator { .. }
+            | IrBlockKind::ZeroOrderHold => 1,
             _ => 0,
         }
     }
     /// True if the block requires a discrete sample time.
     pub fn needs_discrete(&self) -> bool {
-        self.num_disc_states() > 0
+        match self {
+            // A Zero-Order Hold that inherits a continuous or constant sample time
+            // passes its input through (DES-07 §5, #166).
+            IrBlockKind::ZeroOrderHold => false,
+            _ => self.num_disc_states() > 0,
+        }
     }
+}
+
+/// Trigonometric function operators (#167).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrigOp {
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Atan2,
+    Sinh,
+    Cosh,
+    Tanh,
+    Asinh,
+    Acosh,
+    Atanh,
+}
+
+impl TrigOp {
+    /// Name of the `math` function (atan2 is handled separately).
+    pub fn py_name(&self) -> &'static str {
+        match self {
+            TrigOp::Sin => "sin",
+            TrigOp::Cos => "cos",
+            TrigOp::Tan => "tan",
+            TrigOp::Asin => "asin",
+            TrigOp::Acos => "acos",
+            TrigOp::Atan => "atan",
+            TrigOp::Atan2 => "atan2",
+            TrigOp::Sinh => "sinh",
+            TrigOp::Cosh => "cosh",
+            TrigOp::Tanh => "tanh",
+            TrigOp::Asinh => "asinh",
+            TrigOp::Acosh => "acosh",
+            TrigOp::Atanh => "atanh",
+        }
+    }
+}
+
+/// Math Function operators (#168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathOp {
+    Exp,
+    Log,
+    TenToU,
+    Log10,
+    MagnitudeSquared,
+    Square,
+    Sqrt,
+    Pow,
+    Conj,
+    Reciprocal,
+    Hypot,
+    Rem,
+    Mod,
+    Transpose,
+    Hermitian,
+}
+
+/// Sqrt block operators (#168).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqrtOp {
+    Sqrt,
+    SignedSqrt,
+    RSqrt,
+}
+
+/// Relational operators (#170).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Ge,
+    Gt,
+    IsInf,
+    IsNaN,
+    IsFinite,
+}
+
+impl RelOp {
+    /// The Python comparison operator, or `None` for the type checks.
+    pub fn py_operator(self) -> Option<&'static str> {
+        match self {
+            RelOp::Eq => Some("=="),
+            RelOp::Ne => Some("!="),
+            RelOp::Lt => Some("<"),
+            RelOp::Le => Some("<="),
+            RelOp::Ge => Some(">="),
+            RelOp::Gt => Some(">"),
+            RelOp::IsInf | RelOp::IsNaN | RelOp::IsFinite => None,
+        }
+    }
+}
+
+/// Logical operators (#170).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogicOp {
+    And,
+    Or,
+    Nand,
+    Nor,
+    Xor,
+    Nxor,
+    Not,
 }
 
 /// One logged channel.

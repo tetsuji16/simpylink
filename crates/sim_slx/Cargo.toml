@@ -12,6 +12,7 @@ sim_core.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 quick-xml.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

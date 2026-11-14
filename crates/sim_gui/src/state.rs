@@ -82,11 +82,15 @@ pub struct AppState {
     pub sim: SimSession,
     pub diagnostics: Vec<Diagnostic>,
     pub results: Option<SimResults>,
+    /// `revision` at the moment the run that produced `results` was started.
+    pub results_revision: Option<u64>,
     pub run_log: Vec<String>,
     pub open_scopes: BTreeSet<BlockId>,
     pub scope_reset: bool,
     pub code_view: Option<CodeViewState>,
     pub revision: u64,
+    /// `revision` when the current or most recent run was started.
+    run_started_revision: Option<u64>,
     pub library_filter: String,
     pub python_error: Option<String>,
     pub import_report: Option<Vec<String>>,
@@ -133,11 +137,13 @@ impl AppState {
             sim: SimSession::new(),
             diagnostics: vec![],
             results: None,
+            results_revision: None,
             run_log: vec![],
             open_scopes: BTreeSet::new(),
             scope_reset: false,
             code_view: None,
             revision: 0,
+            run_started_revision: None,
             library_filter: String::new(),
             python_error: None,
             import_report: None,
@@ -445,10 +451,14 @@ impl AppState {
     }
 
     fn reset_view_state(&mut self) {
+        // A run of the previous document must not deliver results to this one.
+        self.sim.abandon();
         let viewport = self.canvas.viewport;
         self.canvas = CanvasController::new();
         self.canvas.viewport = viewport;
         self.results = None;
+        self.results_revision = None;
+        self.run_started_revision = None;
         self.diagnostics.clear();
         self.open_scopes.clear();
         self.param_dialog = None;
@@ -463,8 +473,11 @@ impl AppState {
             .map(|e| e.eq_ignore_ascii_case("slx"))
             .unwrap_or(false);
         let (mut model, slx, report) = if is_slx {
-            let imp = sim_slx::read_slx(path)
-                .map_err(|e| format!("Could not open {}: {e}", path.display()))?;
+            let imp = sim_slx::read_slx(path).map_err(|e| {
+                let msg = format!("Could not open {}: {e}", path.display());
+                self.status = msg.clone();
+                msg
+            })?;
             (imp.model, Some(imp.preserved), Some(imp.report.lines()))
         } else {
             let m = sim_core::json::load_from_path(path).map_err(|e| {
@@ -557,7 +570,10 @@ impl AppState {
             PendingAction::Open(p) => {
                 let _shown_in_status = self.open_path(&p);
             }
-            PendingAction::Quit => self.quit_confirmed = true,
+            PendingAction::Quit => {
+                self.sim.abandon();
+                self.quit_confirmed = true;
+            }
         }
     }
 
@@ -579,6 +595,7 @@ impl AppState {
             Ok(d) => {
                 self.diagnostics = d;
                 self.run_log.clear();
+                self.run_started_revision = Some(self.revision);
                 self.status = "Running…".into();
             }
             Err(StartError::Compile(d)) => {
@@ -605,6 +622,11 @@ impl AppState {
     /// Ctrl+Shift+T.
     pub fn stop_run(&mut self) {
         self.sim.stop();
+    }
+
+    /// True when `results` exist but the model was edited after that run started.
+    pub fn results_are_stale(&self) -> bool {
+        self.results.is_some() && self.results_revision.is_some_and(|r| r != self.revision)
     }
 
     /// Called every frame.
@@ -637,6 +659,7 @@ impl AppState {
                 }
                 if results.is_some() {
                     self.results = results;
+                    self.results_revision = self.run_started_revision;
                     self.scope_reset = true;
                     if self.open_scopes.is_empty() {
                         self.open_scopes = scope_sids(&self.doc.model.root);
