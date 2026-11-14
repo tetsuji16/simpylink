@@ -190,50 +190,26 @@ fn already_exists(path: &Path) -> SlxError {
     ))
 }
 
-/// Creates `path` exclusively and writes `bytes`, removing a partial file on failure.
-fn write_new(bytes: &[u8], path: &Path) -> Result<(), SlxError> {
-    let mut f = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                already_exists(path)
-            } else {
-                SlxError::Io(e)
-            }
-        })?;
-    let written = f.write_all(bytes).and_then(|()| f.sync_all());
-    drop(f);
-    match written {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            std::fs::remove_file(path).map_err(|cleanup| {
-                SlxError::Io(std::io::Error::new(
-                    cleanup.kind(),
-                    format!("write failed: {e}; could not remove partial file: {cleanup}"),
-                ))
-            })?;
-            Err(SlxError::Io(e))
-        }
-    }
-}
-
 /// Writes `bytes` to `tmp`, then gives them the final name without replacing anything.
-fn write_through_temp(
+fn write_through_temp<F>(
     bytes: &[u8],
     mut f: std::fs::File,
     tmp: &Path,
     path: &Path,
-) -> Result<(), SlxError> {
+    hard_link: F,
+) -> Result<(), SlxError>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
     f.write_all(bytes)?;
     f.sync_all()?;
     drop(f);
-    match std::fs::hard_link(tmp, path) {
+    match hard_link(tmp, path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(already_exists(path)),
-        // Some file systems have no hard links: create `path` exclusively instead.
-        Err(_) => write_new(bytes, path),
+        // A direct-write fallback could expose a partial file if the process stops midway.
+        // Preserve the atomicity guarantee by returning the hard-link error instead.
+        Err(e) => Err(SlxError::Io(e)),
     }
 }
 
@@ -242,12 +218,25 @@ fn write_through_temp(
 /// The bytes go to a temporary file next to `path` first, which is then linked to
 /// `path`. `hard_link` fails with `AlreadyExists` instead of replacing a file, so the
 /// "never overwrite" promise also holds when another process creates `path` between the
-/// check and the write. `path` only ever appears when it is complete.
+/// check and the write. `path` only ever appears when it is complete. If the file system
+/// does not support hard links, the operation returns an error rather than writing a
+/// partial file under the final name.
 pub fn write_package_file(pkg: &OpcPackage, path: &Path) -> Result<(), SlxError> {
+    write_package_file_with_hard_link(pkg, path, |tmp, path| std::fs::hard_link(tmp, path))
+}
+
+fn write_package_file_with_hard_link<F>(
+    pkg: &OpcPackage,
+    path: &Path,
+    hard_link: F,
+) -> Result<(), SlxError>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
     let bytes = write_package(pkg)?;
     let tmp = temp_path(path)?;
     let f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-    let result = write_through_temp(&bytes, f, &tmp, path);
+    let result = write_through_temp(&bytes, f, &tmp, path, hard_link);
     // The temporary file must not survive, whether the write worked or not.
     let cleanup = std::fs::remove_file(&tmp);
     match (result, cleanup) {
@@ -357,14 +346,39 @@ mod tests {
     }
 
     #[test]
+    fn hard_link_failure_does_not_create_a_partial_destination() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("new.slx");
+        let simulated_failure = |_: &Path, _: &Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hard links are unavailable",
+            ))
+        };
+        assert!(
+            matches!(write_package_file_with_hard_link(&sample(), &path, simulated_failure), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::Unsupported)
+        );
+        assert!(!path.exists());
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
     fn fallback_never_deletes_an_existing_file() {
         let d = tempfile::tempdir().unwrap();
         let path = d.path().join("existing.slx");
-        std::fs::write(&path, b"original").unwrap();
-        assert!(
-            matches!(write_new(b"new", &path), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
-        );
-        assert_eq!(std::fs::read(path).unwrap(), b"original");
+        let competing_writer = |_: &Path, target: &Path| {
+            std::fs::write(target, b"original")?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "destination was created concurrently",
+            ))
+        };
+        assert!(matches!(
+            write_package_file_with_hard_link(&sample(), &path, competing_writer),
+            Err(SlxError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
     }
 
     #[test]
