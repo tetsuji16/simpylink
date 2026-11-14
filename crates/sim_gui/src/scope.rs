@@ -90,6 +90,8 @@ pub const AXES_BG: Color32 = Color32::BLACK;
 pub const AXES_FG: Color32 = Color32::from_rgb(0xAF, 0xAF, 0xAF);
 /// Grid lines.
 pub const GRID: Color32 = Color32::from_rgb(0x50, 0x50, 0x50);
+/// Warning text: the model changed after the run that produced the results.
+pub const STALE_FG: Color32 = Color32::from_rgb(0xE8, 0x9A, 0x1E);
 
 /// Colour of the `i`-th signal.
 pub fn signal_color(i: usize) -> Color32 {
@@ -162,6 +164,8 @@ pub struct ScopeInfo {
     pub running: bool,
     /// Simulation time of the last sample, if any results exist.
     pub sim_time: Option<f64>,
+    /// True when the model was edited after the run that produced the results.
+    pub stale: bool,
 }
 
 /// Per-window view state.
@@ -570,6 +574,13 @@ pub fn show_scope_window(
                     }),
             )
             .show(ui, |ui| {
+                if info.stale {
+                    ui.label(
+                        egui::RichText::new("Model changed since this run — run again to update")
+                            .color(STALE_FG)
+                            .size(12.0),
+                    );
+                }
                 if series.is_empty() {
                     let r = ui.max_rect();
                     ui.painter().rect_filled(r, CornerRadius::ZERO, AXES_BG);

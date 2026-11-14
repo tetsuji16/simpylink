@@ -138,4 +138,8 @@ pub mod codes {
     pub const E_INVALID_NAME: &str = "E_INVALID_NAME";
     /// A block position or line point is NaN or ±Inf (#198).
     pub const E_NON_FINITE_GEOMETRY: &str = "E_NON_FINITE_GEOMETRY";
+    /// Two Inports (or two Outports) of one system use the same `Port` number (#196).
+    pub const E_DUPLICATE_PORT_NUMBER: &str = "E_DUPLICATE_PORT_NUMBER";
+    /// Inport (or Outport) `Port` numbers are not `1..=count` without gaps (#196).
+    pub const E_PORT_NUMBER_GAP: &str = "E_PORT_NUMBER_GAP";
 }
