@@ -224,11 +224,9 @@ fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>
     for block_type in ["Inport", "Outport"] {
         let mut numbers: Vec<(u32, BlockId)> = vec![];
         let mut seen = BTreeSet::new();
-        let mut duplicated = BTreeSet::new();
         for b in sys.blocks.iter().filter(|b| b.block_type == block_type) {
             let Some(n) = port_number(b) else { continue };
             if !seen.insert(n) {
-                duplicated.insert(n);
                 out.push(Diagnostic::error(
                     E_DUPLICATE_PORT_NUMBER,
                     format!("port number {n} is used by more than one {block_type}"),
@@ -239,11 +237,6 @@ fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>
         }
         numbers.sort_unstable();
         let count = numbers.len() as u32;
-        // A duplicate shifts every later number, so a gap report would only describe the
-        // same root cause twice. Report the duplicates and stop for this block type.
-        if !duplicated.is_empty() {
-            continue;
-        }
         for (index, (n, sid)) in numbers.iter().enumerate() {
             let expected = index as u32 + 1;
             if *n != expected {

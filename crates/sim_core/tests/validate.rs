@@ -230,13 +230,12 @@ fn duplicate_port_numbers_are_reported() {
         "port number 1 is used by more than one Inport"
     );
     assert_eq!(duplicates[0].location.block, Some(BlockId(2)));
-    // The duplicate is the root cause; the resulting gap is not reported as well.
-    assert!(!diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
+    assert!(diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
 }
 
 #[test]
-fn a_duplicate_suppresses_the_gap_it_causes() {
-    // 1,1,2: the second 1 is the duplicate; port 2 must not also be reported as a gap.
+fn duplicate_and_gap_are_reported_together() {
+    // There are three blocks, but their numbers are not the sequence 1,2,3.
     let model = model_with_ports("Inport", &["1", "1", "2"]);
     let diagnostics = validate_model(&model);
     let duplicates = diagnostics
@@ -244,8 +243,18 @@ fn a_duplicate_suppresses_the_gap_it_causes() {
         .filter(|d| d.code == E_DUPLICATE_PORT_NUMBER)
         .count();
     assert_eq!(duplicates, 1, "{diagnostics:?}");
+    assert!(diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
+}
+
+#[test]
+fn duplicate_does_not_hide_an_independent_gap() {
+    let model = model_with_ports("Inport", &["1", "1", "4"]);
+    let diagnostics = validate_model(&model);
+    assert!(diagnostics
+        .iter()
+        .any(|d| d.code == E_DUPLICATE_PORT_NUMBER));
     assert!(
-        !diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP),
+        diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP),
         "{diagnostics:?}"
     );
 }
