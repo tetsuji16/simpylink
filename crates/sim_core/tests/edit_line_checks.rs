@@ -114,7 +114,7 @@ fn add_line_preserves_existing_out_of_range_port_behavior() {
         id: LineId(3),
         src: pr(2, 99),
         points: vec![],
-        dst: Some(pr(3, 1)),
+        dst: None,
         branches: vec![],
         name: String::new(),
     };
@@ -168,20 +168,25 @@ fn restore_items_rejects_a_line_that_steals_a_connected_input() {
 }
 
 #[test]
-fn restore_items_rejects_invalid_modified_lines_atomically() {
+fn undo_delete_restores_a_preexisting_out_of_range_line() {
     let mut m = fixture();
-    let mut invalid = line_of(&m, 1);
-    invalid.dst = Some(pr(99, 1));
-    let err = expect_rejected(
-        &mut m,
-        Command::RestoreItems {
-            path: root(),
-            blocks: vec![],
-            lines: vec![],
-            modified_lines: vec![invalid],
-        },
-    );
-    assert_eq!(err, EditError::BlockNotFound(BlockId(99)));
+    // AddLine historically permits invalid port numbers; deleting a destination
+    // prunes the line and Undo must restore the original line verbatim.
+    m.root.lines[1].src = pr(2, 99);
+    let before = m.clone();
+    let mut history = History::new(10);
+    history
+        .execute(
+            &mut m,
+            Command::DeleteItems {
+                path: root(),
+                blocks: vec![BlockId(3)],
+                lines: vec![],
+            },
+        )
+        .expect("delete destination block");
+    assert!(history.undo(&mut m).expect("undo deletion"));
+    assert_eq!(m, before);
 }
 
 #[test]

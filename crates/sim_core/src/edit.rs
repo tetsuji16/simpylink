@@ -359,9 +359,6 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
                     *existing = l.clone();
                 }
             }
-            for l in &modified_lines {
-                check_line_endpoints(&probe, l, Some(l.id), true)?;
-            }
             for l in &lines {
                 check_line_endpoints(&probe, l, None, true)?;
                 probe.insert_line_sorted(l.clone());
