@@ -1,7 +1,9 @@
 //! Open Packaging Conventions (ZIP) container, lossless.
 use crate::error::SlxError;
+use std::ffi::OsString;
+use std::fs::OpenOptions;
 use std::io::{Cursor, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// One part.
 #[derive(Debug, Clone, PartialEq)]
@@ -174,19 +176,89 @@ pub fn read_package_file(path: &Path) -> Result<OpcPackage, SlxError> {
     read_package(&std::fs::read(path)?)
 }
 
-/// Writes a package file; refuses to overwrite.
-pub fn write_package_file(pkg: &OpcPackage, path: &Path) -> Result<(), SlxError> {
-    if path.exists() {
-        return Err(SlxError::Io(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!(
-                "{} exists; simpylink never overwrites SLX files",
-                path.display()
-            ),
-        )));
+/// Returns the temporary path used while writing `path`.
+fn temp_path(path: &Path) -> Result<PathBuf, SlxError> {
+    let name = path.file_name().ok_or_else(|| {
+        SlxError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no file name", path.display()),
+        ))
+    })?;
+    let mut tmp = OsString::from(".");
+    tmp.push(name);
+    tmp.push(format!(".{}.tmp", std::process::id()));
+    Ok(path.with_file_name(tmp))
+}
+
+/// The error reported when the target file already exists.
+fn already_exists(path: &Path) -> SlxError {
+    SlxError::Io(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "{} exists; simpylink never overwrites SLX files",
+            path.display()
+        ),
+    ))
+}
+
+/// Writes `bytes` to `tmp`, then gives them the final name without replacing anything.
+fn write_through_temp<F>(
+    bytes: &[u8],
+    mut f: std::fs::File,
+    tmp: &Path,
+    path: &Path,
+    hard_link: F,
+) -> Result<(), SlxError>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    f.write_all(bytes)?;
+    f.sync_all()?;
+    drop(f);
+    match hard_link(tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(already_exists(path)),
+        // A direct-write fallback could expose a partial file if the process stops midway.
+        // Preserve the atomicity guarantee by returning the hard-link error instead.
+        Err(e) => Err(SlxError::Io(e)),
     }
-    std::fs::write(path, write_package(pkg)?)?;
-    Ok(())
+}
+
+/// Writes a package file; refuses to overwrite.
+///
+/// The bytes go to a temporary file next to `path` first, which is then linked to
+/// `path`. `hard_link` fails with `AlreadyExists` instead of replacing a file, so the
+/// "never overwrite" promise also holds when another process creates `path` between the
+/// check and the write. `path` only ever appears when it is complete. If the file system
+/// does not support hard links, the operation returns an error rather than writing a
+/// partial file under the final name.
+pub fn write_package_file(pkg: &OpcPackage, path: &Path) -> Result<(), SlxError> {
+    write_package_file_with_hard_link(pkg, path, |tmp, path| std::fs::hard_link(tmp, path))
+}
+
+fn write_package_file_with_hard_link<F>(
+    pkg: &OpcPackage,
+    path: &Path,
+    hard_link: F,
+) -> Result<(), SlxError>
+where
+    F: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
+    let bytes = write_package(pkg)?;
+    let tmp = temp_path(path)?;
+    let f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    let result = write_through_temp(&bytes, f, &tmp, path, hard_link);
+    // The temporary file must not survive, whether the write worked or not.
+    let cleanup = std::fs::remove_file(&tmp);
+    match (result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(e), Ok(())) => Err(e),
+        (Ok(()), Err(e)) => Err(e.into()),
+        (Err(e), Err(cleanup)) => Err(SlxError::Io(std::io::Error::new(
+            cleanup.kind(),
+            format!("{e}; could not remove temporary file: {cleanup}"),
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +310,108 @@ mod tests {
             "package is larger than 207 bytes when unpacked"
         );
         assert!(read_package(&bytes).is_ok());
+    }
+
+    fn sample() -> OpcPackage {
+        let mut pkg = OpcPackage::default();
+        pkg.set_part("[Content_Types].xml", b"<Types/>".to_vec());
+        pkg.set_part("doc.xml", b"<Doc/>".to_vec());
+        pkg
+    }
+
+    /// Names of the leftover temporary files in `dir`.
+    fn temp_files(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn writes_a_new_file_and_leaves_no_temporary_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("new.slx");
+        write_package_file(&sample(), &path).unwrap();
+        assert_eq!(read_package_file(&path).unwrap(), sample());
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn refuses_to_overwrite_and_keeps_the_original_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("keep.slx");
+        std::fs::write(&path, b"original").unwrap();
+        match write_package_file(&sample(), &path) {
+            Err(SlxError::Io(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+                assert!(e.to_string().contains("never overwrites SLX files"), "{e}");
+            }
+            other => panic!("expected an AlreadyExists I/O error, got {other:?}"),
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn hard_link_failure_does_not_create_a_partial_destination() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("new.slx");
+        let simulated_failure = |_: &Path, _: &Path| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hard links are unavailable",
+            ))
+        };
+        assert!(
+            matches!(write_package_file_with_hard_link(&sample(), &path, simulated_failure), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::Unsupported)
+        );
+        assert!(!path.exists());
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn fallback_never_deletes_an_existing_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("existing.slx");
+        let competing_writer = |_: &Path, target: &Path| {
+            std::fs::write(target, b"original")?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "destination was created concurrently",
+            ))
+        };
+        assert!(matches!(
+            write_package_file_with_hard_link(&sample(), &path, competing_writer),
+            Err(SlxError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"original");
+        assert_eq!(temp_files(d.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn existing_temporary_file_is_not_removed() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("new.slx");
+        let tmp = temp_path(&path).unwrap();
+        std::fs::write(&tmp, b"other writer").unwrap();
+        assert!(
+            matches!(write_package_file(&sample(), &path), Err(SlxError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists)
+        );
+        assert_eq!(std::fs::read(tmp).unwrap(), b"other writer");
+    }
+
+    #[test]
+    fn reports_a_missing_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("no-such-dir").join("new.slx");
+        assert!(matches!(
+            write_package_file(&sample(), &path),
+            Err(SlxError::Io(_))
+        ));
     }
 
     #[test]
