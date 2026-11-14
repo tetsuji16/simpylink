@@ -264,7 +264,7 @@ pub fn run_cli(cmd: &CliCommand) -> i32 {
             keep_script,
             timeout,
         } => {
-            let timeout = match timeout.map(|seconds| timeout_duration(seconds)) {
+            let timeout = match timeout.map(timeout_duration) {
                 Some(Ok(duration)) => Some(duration),
                 Some(Err(())) => {
                     eprintln!("error: timeout must be a positive number of seconds");

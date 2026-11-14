@@ -484,3 +484,31 @@ fn create_subsystem_from_gain() {
     h.undo(&mut m).unwrap();
     assert_eq!(m.root.blocks, m0.root.blocks);
 }
+
+/// #196: a new Inport must reuse the lowest free port number, not `count + 1`.
+#[test]
+fn new_inport_takes_the_lowest_free_port_number() {
+    let mut sys = System::default();
+    for sid in 1..=3 {
+        let b = new_block(&sys, "Inport", BlockId(sid), Point::new(0.0, 0.0)).unwrap();
+        sys.insert_block_sorted(b);
+    }
+    let ports = |s: &System| -> Vec<String> {
+        s.blocks
+            .iter()
+            .filter_map(|b| b.params.get("Port").cloned())
+            .collect()
+    };
+    assert_eq!(ports(&sys), ["1", "2", "3"]);
+
+    // Delete the Inport with Port = 2 and add a new one.
+    sys.blocks
+        .retain(|b| b.params.get("Port").map(String::as_str) != Some("2"));
+    let added = new_block(&sys, "Inport", BlockId(9), Point::new(0.0, 0.0)).unwrap();
+    assert_eq!(added.params.get("Port").map(String::as_str), Some("2"));
+    sys.insert_block_sorted(added);
+    // Blocks are ordered by SID, so compare the numbers as a set.
+    let mut after = ports(&sys);
+    after.sort();
+    assert_eq!(after, ["1", "2", "3"]);
+}

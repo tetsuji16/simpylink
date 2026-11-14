@@ -2,7 +2,7 @@
 use crate::diag::{codes::*, Diagnostic, Location};
 use crate::ids::{BlockId, LineId};
 use crate::library::{port_counts, spec, validate_param, PortCounts};
-use crate::model::{Branch, Line, Model, PortRef, System};
+use crate::model::{Block, Branch, Line, Model, PortRef, System};
 use crate::path::SystemPath;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -203,6 +203,54 @@ fn dangling(bs: &[Branch]) -> bool {
         .any(|b| (b.dst.is_none() && b.branches.is_empty()) || dangling(&b.branches))
 }
 
+/// The `Port` number of an Inport / Outport, when it is a usable positive integer.
+///
+/// Values that are not positive integers are reported as `E_INVALID_PARAM` by
+/// `validate_param`, so they are skipped here to avoid a second diagnostic.
+fn port_number(b: &Block) -> Option<u32> {
+    b.params
+        .get("Port")?
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| *n > 0)
+}
+
+/// Inport / Outport port numbers of one system: unique and `1..=count` without gaps.
+///
+/// The subsystem port order depends on these numbers, so a duplicate or a gap silently
+/// rewires the parent system (#196).
+fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>) {
+    for block_type in ["Inport", "Outport"] {
+        let mut numbers: Vec<(u32, BlockId)> = vec![];
+        let mut seen = BTreeSet::new();
+        for b in sys.blocks.iter().filter(|b| b.block_type == block_type) {
+            let Some(n) = port_number(b) else { continue };
+            if seen.insert(n) {
+                numbers.push((n, b.sid));
+            } else {
+                out.push(Diagnostic::error(
+                    E_DUPLICATE_PORT_NUMBER,
+                    format!("port number {n} is used by more than one {block_type}"),
+                    Location::block(path, b.sid),
+                ));
+            }
+        }
+        numbers.sort_unstable();
+        let count = numbers.len() as u32;
+        for (index, (n, sid)) in numbers.iter().enumerate() {
+            let expected = index as u32 + 1;
+            if *n != expected {
+                out.push(Diagnostic::error(
+                    E_PORT_NUMBER_GAP,
+                    format!("{block_type} port numbers must be 1..{count} without gaps"),
+                    Location::block(path, *sid),
+                ));
+            }
+        }
+    }
+}
+
 fn check_system(
     sys: &System,
     path: &SystemPath,
@@ -330,6 +378,7 @@ fn check_system(
             check_system(c, &path.child(b.sid), seen_lines, out);
         }
     }
+    check_port_numbers(sys, path, out);
 }
 
 fn check_line(

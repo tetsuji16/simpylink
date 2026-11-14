@@ -35,6 +35,30 @@ fn s(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
+/// Reads the attributes of a start tag, keeping their raw (still escaped) values.
+///
+/// An entity reference that XML does not define is an error rather than an empty
+/// string: a name such as `&foo;` would otherwise vanish silently.
+fn read_attrs(
+    part: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> Result<Vec<(String, String)>, SlxError> {
+    let err = |m: String| SlxError::Xml {
+        part: part.into(),
+        message: m,
+    };
+    e.attributes()
+        .map(|a| {
+            let a = a.map_err(|x| err(x.to_string()))?;
+            let raw = s(&a.value);
+            if let Some(bad) = unknown_entity(&raw) {
+                return Err(err(format!("unknown entity '{bad}'")));
+            }
+            Ok((s(a.key.as_ref()), raw))
+        })
+        .collect()
+}
+
 /// Parses bytes into a lossless tree.
 pub fn parse_xml(part: &str, bytes: &[u8]) -> Result<XmlDocument, SlxError> {
     let err = |m: String| SlxError::Xml {
@@ -57,13 +81,7 @@ pub fn parse_xml(part: &str, bytes: &[u8]) -> Result<XmlDocument, SlxError> {
             .map_err(|e| err(e.to_string()))?;
         match ev {
             Event::Start(e) => {
-                let attrs = e
-                    .attributes()
-                    .map(|a| {
-                        a.map(|a| (s(a.key.as_ref()), s(&a.value)))
-                            .map_err(|x| err(x.to_string()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let attrs = read_attrs(part, &e)?;
                 stack.push(XmlElement {
                     name: s(e.name().as_ref()),
                     attrs,
@@ -72,13 +90,7 @@ pub fn parse_xml(part: &str, bytes: &[u8]) -> Result<XmlDocument, SlxError> {
                 });
             }
             Event::Empty(e) => {
-                let attrs = e
-                    .attributes()
-                    .map(|a| {
-                        a.map(|a| (s(a.key.as_ref()), s(&a.value)))
-                            .map_err(|x| err(x.to_string()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                let attrs = read_attrs(part, &e)?;
                 let el = XmlElement {
                     name: s(e.name().as_ref()),
                     attrs,
@@ -98,7 +110,13 @@ pub fn parse_xml(part: &str, bytes: &[u8]) -> Result<XmlDocument, SlxError> {
                 push(&mut stack, &mut top, XmlNode::Element(el));
             }
             Event::Text(t) => push(&mut stack, &mut top, XmlNode::Text(s(t.as_ref()))),
-            Event::GeneralRef(g) => push(&mut stack, &mut top, XmlNode::EntityRef(s(g.as_ref()))),
+            Event::GeneralRef(g) => {
+                let name = s(g.as_ref());
+                if entity(&name).is_none() {
+                    return Err(err(format!("unknown entity '&{name};'")));
+                }
+                push(&mut stack, &mut top, XmlNode::EntityRef(name));
+            }
             Event::CData(c) => push(&mut stack, &mut top, XmlNode::CData(s(c.as_ref()))),
             Event::Comment(c) => push(&mut stack, &mut top, XmlNode::Comment(s(c.as_ref()))),
             Event::Decl(d) => push(&mut stack, &mut top, XmlNode::Decl(s(d.as_ref()))),
@@ -157,8 +175,15 @@ pub fn escape_text(s: &str) -> String {
         .replace('>', "&gt;")
 }
 /// Escapes an attribute value.
+///
+/// `\n`, `\r` and `\t` become character references: XML attribute-value normalization
+/// turns a literal one into a space, so they would not survive a round trip.
 pub fn escape_attr(s: &str) -> String {
-    escape_text(s).replace('"', "&quot;")
+    escape_text(s)
+        .replace('"', "&quot;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
+        .replace('\t', "&#9;")
 }
 /// Unescapes entities.
 pub fn unescape(s: &str) -> String {
@@ -191,6 +216,21 @@ fn entity(name: &str) -> Option<String> {
         _ if name.starts_with('#') => char::from_u32(name[1..].parse().ok()?)?.to_string(),
         _ => return None,
     })
+}
+
+/// Returns the first `&name;` in `s` that is not an entity XML defines.
+fn unknown_entity(s: &str) -> Option<String> {
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        let after = &rest[i + 1..];
+        let j = after.find(';')?;
+        let name = &after[..j];
+        if entity(name).is_none() {
+            return Some(format!("&{name};"));
+        }
+        rest = &after[j + 1..];
+    }
+    None
 }
 
 impl XmlDocument {
@@ -264,7 +304,7 @@ impl XmlElement {
         for c in &self.children {
             match c {
                 XmlNode::Text(t) => s.push_str(&unescape(t)),
-                XmlNode::EntityRef(r) => s.push_str(&entity(r).unwrap_or_default()),
+                XmlNode::EntityRef(r) => s.push_str(&entity(r).unwrap_or_else(|| format!("&{r};"))),
                 XmlNode::CData(c) => s.push_str(c),
                 _ => {}
             }
