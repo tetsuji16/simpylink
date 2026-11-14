@@ -22,6 +22,9 @@ pub struct RunHandle {
 /// A runaway script can print without end; only the newest lines are kept so memory
 /// stays bounded. The newest lines are the ones that explain a failure.
 pub const MAX_RETAINED_LINES: usize = 10_000;
+/// Maximum UTF-8 bytes retained for one output line, including its truncation marker.
+const MAX_LINE_BYTES: usize = 16 * 1024;
+const LINE_TRUNCATION_MARKER: &str = " …[line truncated]";
 
 /// The newest `MAX_RETAINED_LINES` lines of one output stream.
 #[derive(Default)]
@@ -178,22 +181,57 @@ impl EventQueue {
 /// if the reader stopped early the pipe would fill up and the child would block forever.
 fn drain_lines(reader: impl Read, mut on_line: impl FnMut(String)) {
     let mut reader = BufReader::new(reader);
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(MAX_LINE_BYTES);
+    let mut truncated = false;
     loop {
-        buf.clear();
-        match reader.read_until(b'\n', &mut buf) {
-            // End of stream, or the pipe is broken: nothing more can arrive.
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-            if buf.last() == Some(&b'\r') {
-                buf.pop();
+        let (consumed, line_ended, eof) = match reader.fill_buf() {
+            // End of stream: emit a final unterminated line if one was in progress.
+            Ok([]) => (0, false, true),
+            Ok(chunk) => {
+                let line_end = chunk.iter().position(|byte| *byte == b'\n');
+                let consumed = line_end.map_or(chunk.len(), |index| index + 1);
+                let content_len = line_end.unwrap_or(consumed);
+                let available = MAX_LINE_BYTES.saturating_sub(buf.len());
+                let retained = content_len.min(available);
+                buf.extend_from_slice(&chunk[..retained]);
+                truncated |= retained < content_len;
+                (consumed, line_end.is_some(), false)
             }
+            // A broken pipe ends this stream, as before.
+            Err(_) => break,
+        };
+        if eof {
+            if !buf.is_empty() || truncated {
+                on_line(finish_line(&buf, false, truncated));
+            }
+            break;
         }
-        on_line(String::from_utf8_lossy(&buf).into_owned());
+        reader.consume(consumed);
+        if line_ended {
+            on_line(finish_line(&buf, true, truncated));
+            buf.clear();
+            truncated = false;
+        }
     }
+}
+
+fn finish_line(bytes: &[u8], line_ended: bool, truncated: bool) -> String {
+    let mut bytes = bytes;
+    if line_ended && !truncated && bytes.last() == Some(&b'\r') {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    let mut line = String::from_utf8_lossy(bytes).into_owned();
+    let needs_marker = truncated || line.len() > MAX_LINE_BYTES;
+    if needs_marker {
+        let content_limit = MAX_LINE_BYTES - LINE_TRUNCATION_MARKER.len();
+        let mut end = content_limit.min(line.len());
+        while !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        line.truncate(end);
+        line.push_str(LINE_TRUNCATION_MARKER);
+    }
+    line
 }
 
 fn status_from(code: Option<i32>, stderr: &[String], stopped: bool, timed_out: bool) -> RunStatus {
@@ -422,6 +460,27 @@ mod tests {
             lines_of(b"ok\n\xff\xfe bad\nafter\n"),
             ["ok", "\u{fffd}\u{fffd} bad", "after"]
         );
+    }
+
+    #[test]
+    fn drain_lines_bounds_long_lines_and_keeps_reading() {
+        let mut input = vec![b'x'; MAX_LINE_BYTES * 8];
+        input.push(b'\n');
+        input.extend_from_slice(b"after\n");
+        let lines = lines_of(&input);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].len() <= MAX_LINE_BYTES);
+        assert!(lines[0].ends_with(LINE_TRUNCATION_MARKER));
+        assert_eq!(lines[1], "after");
+    }
+
+    #[test]
+    fn drain_lines_bounds_an_unterminated_long_line() {
+        let input = vec![b'x'; MAX_LINE_BYTES * 8];
+        let lines = lines_of(&input);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].len() <= MAX_LINE_BYTES);
+        assert!(lines[0].ends_with(LINE_TRUNCATION_MARKER));
     }
 
     #[test]
