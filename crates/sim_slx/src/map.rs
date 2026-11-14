@@ -72,13 +72,24 @@ pub struct SlxImport {
 const BD: &str = "simulink/blockdiagram.xml";
 const ROOT_SYS: &str = "simulink/systems/system_root.xml";
 
-fn collect_sids(pkg: &OpcPackage, split: bool) -> Vec<String> {
+/// Loads a part that the model cannot be read without.
+///
+/// A part that is present but is not well-formed XML is reported as `SlxError::Xml`
+/// with that part name, so a truncated file is not read as a complete one.
+fn required_part(pkg: &OpcPackage, name: &str, missing: &str) -> Result<XmlDocument, SlxError> {
+    let part = pkg
+        .part(name)
+        .ok_or_else(|| SlxError::Unsupported(missing.into()))?;
+    parse_xml(name, &part.data)
+}
+
+fn collect_sids(pkg: &OpcPackage, split: bool) -> Result<Vec<String>, SlxError> {
     fn walk(
         pkg: &OpcPackage,
         sys: &XmlElement,
         seen: &mut BTreeSet<String>,
         out: &mut Vec<String>,
-    ) {
+    ) -> Result<(), SlxError> {
         for block in sys.children_named("Block") {
             if let Some(sid) = block.attr("SID") {
                 out.push(sid);
@@ -87,32 +98,35 @@ fn collect_sids(pkg: &OpcPackage, split: bool) -> Vec<String> {
                 if let Some(reference) = child.attr("Ref") {
                     let part = format!("simulink/systems/{reference}.xml");
                     if seen.insert(part.clone()) {
-                        if let Some(doc) =
-                            pkg.part(&part).and_then(|p| parse_xml(&part, &p.data).ok())
-                        {
+                        // A missing part is reported later as "not found"; one that exists
+                        // but cannot be parsed breaks the read.
+                        if let Some(p) = pkg.part(&part) {
+                            let doc = parse_xml(&part, &p.data)?;
                             if let Some(root) = doc.root() {
-                                walk(pkg, root, seen, out);
+                                walk(pkg, root, seen, out)?;
                             }
                         }
                     }
                 } else {
-                    walk(pkg, child, seen, out);
+                    walk(pkg, child, seen, out)?;
                 }
             }
         }
+        Ok(())
     }
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     let root = if split {
         pkg.part(ROOT_SYS)
-            .and_then(|p| parse_xml(ROOT_SYS, &p.data).ok())
+            .map(|p| parse_xml(ROOT_SYS, &p.data))
+            .transpose()?
     } else {
-        pkg.part(BD).and_then(|p| parse_xml(BD, &p.data).ok())
+        pkg.part(BD).map(|p| parse_xml(BD, &p.data)).transpose()?
     };
     if let Some(doc) = root {
         if split {
             if let Some(sys) = doc.root() {
-                walk(pkg, sys, &mut seen, &mut out);
+                walk(pkg, sys, &mut seen, &mut out)?;
             }
         } else if let Some(sys) = doc
             .root()
@@ -123,10 +137,10 @@ fn collect_sids(pkg: &OpcPackage, split: bool) -> Vec<String> {
             })
             .and_then(|m| m.children_named("System").next())
         {
-            walk(pkg, sys, &mut seen, &mut out);
+            walk(pkg, sys, &mut seen, &mut out)?;
         }
     }
-    out
+    Ok(out)
 }
 
 struct SidAssignment {
@@ -397,14 +411,34 @@ fn patch_orientations(
     Ok(())
 }
 
-fn parse_num_list(s: &str) -> Vec<f64> {
-    s.trim()
+/// Splits a Simulink number list.
+///
+/// Returns the values that could be read and, if any element was not a number, the
+/// first offending element. A caller must treat the whole list as unreadable then,
+/// rather than silently working with the remaining numbers.
+fn parse_num_list(s: &str) -> (Vec<f64>, Option<String>) {
+    let mut values = vec![];
+    let mut bad = None;
+    for x in s
+        .trim()
         .trim_start_matches('[')
         .trim_end_matches(']')
         .split([',', ';', ' '])
-        .filter(|x| !x.trim().is_empty())
-        .filter_map(|x| x.trim().parse().ok())
-        .collect()
+    {
+        let x = x.trim();
+        if x.is_empty() {
+            continue;
+        }
+        match x.parse::<f64>() {
+            Ok(v) => values.push(v),
+            Err(_) => {
+                if bad.is_none() {
+                    bad = Some(x.to_string());
+                }
+            }
+        }
+    }
+    (values, bad)
 }
 
 fn parse_port_ref(s: &str, want_in: bool, sid_map: &BTreeMap<String, BlockId>) -> Option<PortRef> {
@@ -432,8 +466,20 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
-    fn load_part(&self, name: &str) -> Option<XmlDocument> {
-        parse_xml(name, &self.pkg.part(name)?.data).ok()
+    /// Loads an optional part; one that exists but cannot be parsed becomes a warning.
+    fn load_part(&mut self, name: &str) -> Option<XmlDocument> {
+        // Copy the reference out so the borrow of `self` ends before the warning is pushed.
+        let pkg = self.pkg;
+        let part = pkg.part(name)?;
+        match parse_xml(name, &part.data) {
+            Ok(doc) => Some(doc),
+            Err(e) => {
+                self.report
+                    .warnings
+                    .push(format!("{name}: could not be parsed ({e}); ignored"));
+                None
+            }
+        }
     }
 
     fn system(&mut self, sys_el: &XmlElement, path: &str) -> System {
@@ -460,9 +506,25 @@ impl Reader<'_> {
 
     fn block(&mut self, b: &XmlElement, path: &str) -> Option<Block> {
         let ps = p_map(b);
-        let mut bt = b.attr("BlockType").unwrap_or_default();
+        // `Name` is needed to build the block path, so it comes first.
         let name = b.attr("Name").unwrap_or_default();
         let full = format!("{path}/{name}");
+        if name.is_empty() {
+            self.report
+                .warnings
+                .push(format!("{path}: block has no Name"));
+        }
+        // A block without a BlockType cannot be mapped to a known block; keep it opaque
+        // instead of pretending it is a valid empty type.
+        let mut bt = match b.attr("BlockType") {
+            Some(v) => v,
+            None => {
+                self.report.warnings.push(format!(
+                    "{full}: block has no BlockType; kept as an opaque block"
+                ));
+                String::new()
+            }
+        };
         let Some(sid_text) = b.attr("SID") else {
             self.report
                 .dropped
@@ -482,15 +544,20 @@ impl Reader<'_> {
                 .push(format!("{full}: SID '{sid_text}' was not assigned"));
             return None;
         };
-        let pos = parse_num_list(
-            ps.get("Position")
-                .map(String::as_str)
-                .unwrap_or("[0, 0, 30, 30]"),
-        );
-        let position = if pos.len() == 4 {
-            Rect::new(pos[0], pos[1], pos[2], pos[3])
-        } else {
-            Rect::new(0.0, 0.0, 30.0, 30.0)
+        let raw_position = ps
+            .get("Position")
+            .map(String::as_str)
+            .unwrap_or("[0, 0, 30, 30]");
+        let (pos, bad_position) = parse_num_list(raw_position);
+        let position = match bad_position {
+            Some(raw) => {
+                self.report.warnings.push(format!(
+                    "{full}: Position has a value that is not a number: '{raw}'; using the default position"
+                ));
+                Rect::new(0.0, 0.0, 30.0, 30.0)
+            }
+            None if pos.len() == 4 => Rect::new(pos[0], pos[1], pos[2], pos[3]),
+            None => Rect::new(0.0, 0.0, 30.0, 30.0),
         };
         let rotation = ps.get("BlockRotation").map(String::as_str);
         if let Some(value) = rotation.filter(|value| !matches!(*value, "0" | "90" | "180" | "270"))
@@ -509,7 +576,8 @@ impl Reader<'_> {
         }
         let mut params = BTreeMap::new();
         let mut system = None;
-        let source = ps.get("SourceBlock").cloned().unwrap_or_default();
+        // Optional: only library-linked blocks carry a SourceBlock.
+        let source = ps.get("SourceBlock").map(String::as_str).unwrap_or("");
         if (bt == "SubSystem" && source.contains("PID Controller"))
             || (bt == "Reference" && source.contains("PID Controller"))
         {
@@ -553,22 +621,26 @@ impl Reader<'_> {
             let inline = b.children_named("System").next();
             let child = match inline {
                 Some(s) if s.attr("Ref").is_none() => Some(self.system(s, &full)),
-                Some(s) => {
-                    let r = s.attr("Ref").unwrap_or_default();
-                    let part = format!("simulink/systems/{r}.xml");
-                    match self.load_part(&part) {
-                        Some(doc) => doc.root().map(|root| self.system(root, &full)),
-                        None => {
-                            self.report
-                                .warnings
-                                .push(format!("{full}: referenced system part {part} not found"));
-                            None
+                Some(s) => match s.attr("Ref") {
+                    Some(r) => {
+                        let part = format!("simulink/systems/{r}.xml");
+                        match self.load_part(&part) {
+                            Some(doc) => doc.root().map(|root| self.system(root, &full)),
+                            None => {
+                                self.report.warnings.push(format!(
+                                    "{full}: referenced system part {part} not found"
+                                ));
+                                None
+                            }
                         }
                     }
-                }
+                    // Unreachable: the arm above handles a System without a Ref.
+                    None => None,
+                },
                 None => None,
             };
-            system = Some(child.unwrap_or_default());
+            // A SubSystem without a readable body keeps an empty system.
+            system = Some(child.unwrap_or_else(System::default));
         } else if let Some(s) = spec(&bt) {
             for p in s.params {
                 if let Some(v) = ps.get(p.name) {
@@ -684,25 +756,28 @@ impl Reader<'_> {
             points: vec![],
             dst,
             branches,
-            name: ps.get("Name").cloned().unwrap_or_default(),
+            // A branch without a Name is still a branch; keep the label empty.
+            name: ps.get("Name").cloned().unwrap_or_else(String::new),
         })
     }
 }
 
-fn find_p(e: &XmlElement, name: &str, out: &mut Option<String>) {
-    if out.is_some() {
-        return;
+/// Every `P` value found in the optional `simulink/*.xml` parts (first occurrence wins).
+///
+/// A part that exists but cannot be parsed is reported through `warnings` instead of
+/// being skipped without a trace.
+fn config_values(pkg: &OpcPackage, warnings: &mut Vec<String>) -> BTreeMap<String, String> {
+    fn collect(e: &XmlElement, out: &mut BTreeMap<String, String>) {
+        for p in e.children_named("P") {
+            if let Some(name) = p.attr("Name") {
+                out.entry(name).or_insert_with(|| p.text());
+            }
+        }
+        for c in e.elements() {
+            collect(c, out);
+        }
     }
-    if e.name == "P" && e.attr("Name").as_deref() == Some(name) {
-        *out = Some(e.text());
-        return;
-    }
-    for c in e.elements() {
-        find_p(c, name, out);
-    }
-}
-
-fn config_value(pkg: &OpcPackage, name: &str) -> Option<String> {
+    let mut out = BTreeMap::new();
     for part in &pkg.parts {
         if !part.name.starts_with("simulink/")
             || !part.name.ends_with(".xml")
@@ -710,22 +785,20 @@ fn config_value(pkg: &OpcPackage, name: &str) -> Option<String> {
         {
             continue;
         }
-        let Ok(doc) = parse_xml(&part.name, &part.data) else {
-            continue;
-        };
-        let mut out = None;
-        if let Some(r) = doc.root() {
-            find_p(r, name, &mut out);
-        }
-        if out.is_some() {
-            return out;
+        match parse_xml(&part.name, &part.data) {
+            Ok(doc) => {
+                if let Some(r) = doc.root() {
+                    collect(r, &mut out);
+                }
+            }
+            Err(e) => warnings.push(format!("{}: could not be parsed ({e}); ignored", part.name)),
         }
     }
-    None
+    out
 }
 
 /// Active config-set solver properties as name to string value.
-fn solver_settings(pkg: &OpcPackage) -> BTreeMap<String, String> {
+fn solver_settings(pkg: &OpcPackage, warnings: &mut Vec<String>) -> BTreeMap<String, String> {
     let json_path = pkg
         .part("simulink/configSetInfo.json")
         .and_then(|p| serde_json::from_slice::<serde_json::Value>(&p.data).ok())
@@ -779,50 +852,63 @@ fn solver_settings(pkg: &OpcPackage) -> BTreeMap<String, String> {
         ("", "simulink/configSet0.xml"),
     ] {
         let target = if !info.is_empty() {
-            pkg.part(info)
-                .and_then(|p| parse_xml(info, &p.data).ok())
-                .and_then(|d| {
-                    d.root()
-                        .and_then(|r| {
-                            r.children_named("ConfigSet")
-                                .find(|e| e.attr("Active").as_deref() == Some("true"))
-                        })
-                        .and_then(|e| e.attr("PartName"))
-                })
-                .map(|p| p.trim_start_matches('/').to_string())
-                .unwrap_or_else(|| fallback.to_string())
+            let doc = match pkg.part(info) {
+                Some(p) => match parse_xml(info, &p.data) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        warnings.push(format!("{info}: could not be parsed ({e}); ignored"));
+                        None
+                    }
+                },
+                None => None,
+            };
+            doc.and_then(|d| {
+                d.root()
+                    .and_then(|r| {
+                        r.children_named("ConfigSet")
+                            .find(|e| e.attr("Active").as_deref() == Some("true"))
+                    })
+                    .and_then(|e| e.attr("PartName"))
+            })
+            .map(|p| p.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| fallback.to_string())
         } else {
             fallback.to_string()
         };
         if let Some(part) = pkg.part(&target) {
-            if let Ok(doc) = parse_xml(&target, &part.data) {
-                if let Some(root) = doc.root() {
-                    let mut solver = None;
-                    fn find_solver(
-                        e: &XmlElement,
-                        inside: bool,
-                        out: &mut Option<BTreeMap<String, String>>,
-                    ) {
-                        let is_solver = inside
-                            || (e.name == "Object"
-                                && e.attr("ClassName").as_deref() == Some("Simulink.SolverCC"));
-                        if is_solver {
-                            let values: BTreeMap<_, _> = e
-                                .children_named("P")
-                                .filter_map(|p| Some((p.attr("Name")?, p.text())))
-                                .collect();
-                            if !values.is_empty() {
-                                *out = Some(values);
-                            }
-                        }
-                        for c in e.elements() {
-                            find_solver(c, is_solver, out);
+            let doc = match parse_xml(&target, &part.data) {
+                Ok(d) => d,
+                Err(e) => {
+                    warnings.push(format!("{target}: could not be parsed ({e}); ignored"));
+                    continue;
+                }
+            };
+            if let Some(root) = doc.root() {
+                let mut solver = None;
+                fn find_solver(
+                    e: &XmlElement,
+                    inside: bool,
+                    out: &mut Option<BTreeMap<String, String>>,
+                ) {
+                    let is_solver = inside
+                        || (e.name == "Object"
+                            && e.attr("ClassName").as_deref() == Some("Simulink.SolverCC"));
+                    if is_solver {
+                        let values: BTreeMap<_, _> = e
+                            .children_named("P")
+                            .filter_map(|p| Some((p.attr("Name")?, p.text())))
+                            .collect();
+                        if !values.is_empty() {
+                            *out = Some(values);
                         }
                     }
-                    find_solver(root, false, &mut solver);
-                    if let Some(values) = solver {
-                        return values;
+                    for c in e.elements() {
+                        find_solver(c, is_solver, out);
                     }
+                }
+                find_solver(root, false, &mut solver);
+                if let Some(values) = solver {
+                    return values;
                 }
             }
         }
@@ -848,19 +934,24 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
             )));
         }
     }
-    if let Some(part) = pkg.part(BD) {
-        if let Ok(doc) = parse_xml(BD, &part.data) {
-            if doc
-                .root()
-                .is_some_and(|r| r.children_named("Library").next().is_some())
-            {
-                return Err(SlxError::Unsupported(
-                    "this SLX is a block library, not a model".into(),
-                ));
-            }
+    // `blockdiagram.xml` is a required part: one that exists but cannot be parsed is an
+    // error, not a model that happens to look empty.
+    if pkg.part(BD).is_some() {
+        let doc = required_part(
+            &pkg,
+            BD,
+            "no simulink/blockdiagram.xml or systems/system_root.xml",
+        )?;
+        if doc
+            .root()
+            .is_some_and(|r| r.children_named("Library").next().is_some())
+        {
+            return Err(SlxError::Unsupported(
+                "this SLX is a block library, not a model".into(),
+            ));
         }
     }
-    let raw_sids = collect_sids(&pkg, split);
+    let raw_sids = collect_sids(&pkg, split)?;
     let assigned = assign_sids(&raw_sids);
     let mut r = Reader {
         pkg: &pkg,
@@ -879,18 +970,18 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         ));
     }
     let root = if split {
-        let doc = r
-            .load_part(ROOT_SYS)
-            .ok_or_else(|| SlxError::Unsupported("cannot parse system_root.xml".into()))?;
+        let doc = required_part(&pkg, ROOT_SYS, "cannot parse system_root.xml")?;
         let el = doc
             .root()
             .cloned()
             .ok_or_else(|| SlxError::Unsupported("empty system_root.xml".into()))?;
         r.system(&el, model_name)
     } else {
-        let doc = r.load_part(BD).ok_or_else(|| {
-            SlxError::Unsupported("no simulink/blockdiagram.xml or systems/system_root.xml".into())
-        })?;
+        let doc = required_part(
+            &pkg,
+            BD,
+            "no simulink/blockdiagram.xml or systems/system_root.xml",
+        )?;
         let root = doc
             .root()
             .ok_or_else(|| SlxError::Unsupported("empty blockdiagram.xml".into()))?;
@@ -918,7 +1009,10 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
             r.orientation_approximated
         ));
     }
-    let settings = solver_settings(&pkg);
+    // Optional parts that cannot be parsed are collected here and reported at the end.
+    let mut part_warnings: Vec<String> = Vec::new();
+    let settings = solver_settings(&pkg, &mut part_warnings);
+    let config = config_values(&pkg, &mut part_warnings);
     if pkg
         .part("simulink/configSet0.json")
         .is_some_and(|p| serde_json::from_slice::<serde_json::Value>(&p.data).is_err())
@@ -931,7 +1025,7 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         settings
             .get(key)
             .cloned()
-            .or_else(|| config_value(&pkg, key))
+            .or_else(|| config.get(key).cloned())
     };
     let mut num = |k: &str, default: f64| {
         let raw = value(k)?;
@@ -992,8 +1086,8 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
         .get("SolverName")
         .or_else(|| settings.get("Solver"))
         .cloned()
-        .or_else(|| config_value(&pkg, "SolverName"))
-        .or_else(|| config_value(&pkg, "Solver"))
+        .or_else(|| config.get("SolverName").cloned())
+        .or_else(|| config.get("Solver").cloned())
         .as_deref()
     {
         Some("ode45") => model.config.solver = SolverKind::Ode45,
@@ -1017,6 +1111,24 @@ pub fn read_slx_bytes(bytes: &[u8], model_name: &str) -> Result<SlxImport, SlxEr
     model.next_sid = model.max_sid() + 1;
     model.next_line_id = model.max_line_id() + 1;
     let baseline = model.clone();
+    // Parts the importer never reads are checked too: one that exists but is not
+    // well-formed XML means the package is damaged, and the user should hear about it.
+    for part in &pkg.parts {
+        if !part.name.ends_with(".xml") {
+            continue;
+        }
+        if let Err(e) = parse_xml(&part.name, &part.data) {
+            let prefix = format!("{}: could not be parsed (", part.name);
+            let already_reported = part_warnings
+                .iter()
+                .chain(r.report.warnings.iter())
+                .any(|warning| warning.starts_with(&prefix));
+            if !already_reported {
+                part_warnings.push(format!("{}: could not be parsed ({e}); ignored", part.name));
+            }
+        }
+    }
+    r.report.warnings.extend(part_warnings);
     let report = r.report;
     Ok(SlxImport {
         model,
@@ -1213,6 +1325,7 @@ pub fn write_slx_bytes(
         &mut extra,
         preserved.map(|p| &p.sid_map),
     );
+    // Exporting a model that was not imported has no original package to patch.
     let mut pkg = preserved.map(|p| p.package.clone()).unwrap_or_default();
     if pkg.part("[Content_Types].xml").is_none() {
         pkg.set_part(

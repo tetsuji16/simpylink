@@ -136,4 +136,8 @@ pub mod codes {
     pub const W_ATOMIC_AS_VIRTUAL: &str = "W_ATOMIC_AS_VIRTUAL";
     /// Two log channels ended up with the same name (#203).
     pub const E_DUPLICATE_CHANNEL: &str = "E_DUPLICATE_CHANNEL";
+    /// Two Inports (or two Outports) of one system use the same `Port` number (#196).
+    pub const E_DUPLICATE_PORT_NUMBER: &str = "E_DUPLICATE_PORT_NUMBER";
+    /// Inport (or Outport) `Port` numbers are not `1..=count` without gaps (#196).
+    pub const E_PORT_NUMBER_GAP: &str = "E_PORT_NUMBER_GAP";
 }
