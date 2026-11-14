@@ -1,9 +1,9 @@
 //! Python discovery and environment check.
+use crate::process::kill_tree;
 use crate::types::*;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Hides console windows on Windows.
 pub(crate) fn no_window(cmd: &mut Command) {
@@ -53,6 +53,16 @@ pub fn candidates(
     }
 }
 
+fn read_all(mut r: impl std::io::Read) -> String {
+    let mut buf = Vec::new();
+    let _read = r.read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into()
+}
+
+/// Runs `program` and returns its exit code and output, or `None` on timeout.
+///
+/// The child is killed (with the processes it started) and reaped before
+/// returning, so a timeout leaves no zombie behind.
 fn run_capture(
     program: &PathBuf,
     args: &[String],
@@ -64,18 +74,45 @@ fn run_capture(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window(&mut cmd);
-    let child = cmd.spawn().ok()?;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let r = child.wait_with_output();
-        let _sent = tx.send(r);
-    });
-    let out = rx.recv_timeout(timeout).ok()?.ok()?;
-    Some((
-        out.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&out.stdout).into(),
-        String::from_utf8_lossy(&out.stderr).into(),
-    ))
+    #[cfg(unix)]
+    {
+        // Own process group, so `kill_tree` can signal the whole tree.
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().ok()?;
+    let out = child
+        .stdout
+        .take()
+        .map(|s| std::thread::spawn(move || read_all(s)));
+    let err = child
+        .stderr
+        .take()
+        .map(|s| std::thread::spawn(move || read_all(s)));
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break Some(st),
+            Ok(None) => {}
+            Err(_) => {
+                kill_tree(&mut child);
+                break None;
+            }
+        }
+        if started.elapsed() > timeout {
+            kill_tree(&mut child);
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let stdout = out
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let stderr = err
+        .map(|h| h.join().unwrap_or_default())
+        .unwrap_or_default();
+    let status = status?;
+    Some((status.code().unwrap_or(-1), stdout, stderr))
 }
 
 /// Finds Python 3.10+.
