@@ -359,6 +359,12 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
                     *existing = l.clone();
                 }
             }
+            // These lines already existed before the delete operation. Preserve
+            // historical out-of-range ports while still checking block references
+            // and conflicts against the final restored state.
+            for l in &modified_lines {
+                check_line_endpoints(&probe, l, Some(l.id), false)?;
+            }
             for l in &lines {
                 check_line_endpoints(&probe, l, None, true)?;
                 probe.insert_line_sorted(l.clone());

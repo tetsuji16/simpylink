@@ -168,6 +168,40 @@ fn restore_items_rejects_a_line_that_steals_a_connected_input() {
 }
 
 #[test]
+fn restore_items_rejects_a_modified_line_to_a_missing_block_atomically() {
+    let mut m = fixture();
+    let mut invalid = line_of(&m, 1);
+    invalid.dst = Some(pr(99, 1));
+    let err = expect_rejected(
+        &mut m,
+        Command::RestoreItems {
+            path: root(),
+            blocks: vec![],
+            lines: vec![],
+            modified_lines: vec![invalid],
+        },
+    );
+    assert_eq!(err, EditError::BlockNotFound(BlockId(99)));
+}
+
+#[test]
+fn restore_items_rejects_a_modified_line_that_steals_an_input_atomically() {
+    let mut m = fixture();
+    let mut stolen = line_of(&m, 1);
+    stolen.dst = Some(pr(3, 1));
+    let err = expect_rejected(
+        &mut m,
+        Command::RestoreItems {
+            path: root(),
+            blocks: vec![],
+            lines: vec![],
+            modified_lines: vec![stolen],
+        },
+    );
+    assert_eq!(err, EditError::InputAlreadyConnected(pr(3, 1)));
+}
+
+#[test]
 fn undo_delete_restores_a_preexisting_out_of_range_line() {
     let mut m = fixture();
     // AddLine historically permits invalid port numbers; deleting a destination
