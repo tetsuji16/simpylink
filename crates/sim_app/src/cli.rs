@@ -68,12 +68,15 @@ pub const EXIT_PYTHON_ENV: i32 = 5;
 fn parse_timeout(raw: &str) -> Result<f64, String> {
     let bad = || format!("timeout must be a positive number of seconds, got '{raw}'");
     let secs = raw.trim().parse::<f64>().map_err(|_| bad())?;
-    if !secs.is_finite() || secs <= 0.0 {
-        return Err(bad());
-    }
-    // `Duration::from_secs_f64` panics on overflow, so reject an unusable value here.
-    std::time::Duration::try_from_secs_f64(secs).map_err(|_| bad())?;
+    timeout_duration(secs).map_err(|_| bad())?;
     Ok(secs)
+}
+
+fn timeout_duration(secs: f64) -> Result<std::time::Duration, ()> {
+    if !secs.is_finite() || secs <= 0.0 {
+        return Err(());
+    }
+    std::time::Duration::try_from_secs_f64(secs).map_err(|_| ())
 }
 
 fn build(model_path: &Path) -> Result<(Model, sim_codegen_py::GeneratedCode), i32> {
@@ -260,13 +263,17 @@ pub fn run_cli(cmd: &CliCommand) -> i32 {
             python,
             keep_script,
             timeout,
-        } => run_run(
-            model,
-            out_dir,
-            python.as_deref(),
-            *keep_script,
-            timeout.map(std::time::Duration::from_secs_f64),
-        ),
+        } => {
+            let timeout = match timeout.map(|seconds| timeout_duration(seconds)) {
+                Some(Ok(duration)) => Some(duration),
+                Some(Err(())) => {
+                    eprintln!("error: timeout must be a positive number of seconds");
+                    return EXIT_RUN_FAILED;
+                }
+                None => None,
+            };
+            run_run(model, out_dir, python.as_deref(), *keep_script, timeout)
+        }
         CliCommand::CheckPython { python } => run_check_python(python.as_deref()),
     }
 }
@@ -323,5 +330,30 @@ mod tests {
         assert!(parse_timeout("nan").is_err());
         // Finite and positive, but too large for a `Duration`.
         assert!(parse_timeout("1e300").is_err());
+    }
+
+    #[test]
+    fn programmatic_timeout_conversion_rejects_invalid_values_without_panicking() {
+        assert_eq!(
+            timeout_duration(1.5),
+            Ok(std::time::Duration::from_millis(1500))
+        );
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
+            assert!(timeout_duration(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn run_cli_rejects_invalid_programmatic_timeouts_without_panicking() {
+        for invalid in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e300] {
+            let command = CliCommand::Run {
+                model: PathBuf::from("unused.json"),
+                out_dir: PathBuf::from("unused-results"),
+                python: None,
+                keep_script: false,
+                timeout: Some(invalid),
+            };
+            assert_eq!(run_cli(&command), EXIT_RUN_FAILED, "{invalid}");
+        }
     }
 }
