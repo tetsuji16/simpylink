@@ -9,12 +9,73 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+/// Upper bound for the helper process used by [`kill_tree`].
+const KILL_HELPER_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Handle to a running simulation.
 pub struct RunHandle {
     child: Arc<Mutex<Option<Child>>>,
     events: Arc<EventQueue>,
     finished: bool,
     stop_requested: Arc<AtomicBool>,
+}
+
+/// Runs `cmd` and waits at most `limit` for it, then kills the helper itself.
+///
+/// Returns `true` when the helper ran to completion on its own.
+fn run_bounded(mut cmd: Command, limit: Duration) -> bool {
+    let Ok(mut helper) = cmd.spawn() else {
+        return false;
+    };
+    let started = Instant::now();
+    loop {
+        match helper.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if started.elapsed() >= limit {
+            let _killed = helper.kill();
+            let _waited = helper.wait();
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Kills `child` and the processes it started.
+///
+/// Windows uses `taskkill /T`, Unix sends `SIGKILL` to the child's process
+/// group (children are spawned with `process_group(0)`, so the pid is also the
+/// group id). Both fall back to `Child::kill` when the helper cannot run, and
+/// the child is reaped before returning.
+pub(crate) fn kill_tree(child: &mut Child) {
+    let pid = child.id();
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("taskkill");
+        cmd.arg("/PID")
+            .arg(pid.to_string())
+            .args(["/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        no_window(&mut cmd);
+        let _helper_finished = run_bounded(cmd, KILL_HELPER_TIMEOUT);
+    }
+    #[cfg(unix)]
+    {
+        // The shell builtin handles a negative pid (a process group) on every
+        // POSIX shell, while the `kill` binary does not always do so.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &format!("kill -s KILL -- -{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let _helper_finished = run_bounded(cmd, KILL_HELPER_TIMEOUT);
+    }
+    let _killed = child.kill();
+    let _waited = child.wait();
 }
 
 /// Most lines of stdout (and, separately, of stderr) kept for `RunOutcome`.
@@ -300,6 +361,12 @@ impl RunHandle {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         no_window(&mut cmd);
+        #[cfg(unix)]
+        {
+            // Own process group, so `kill_tree` can signal the whole tree.
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         let mut child = cmd.spawn().map_err(|e| RunnerError::Spawn(e.to_string()))?;
         let started = Instant::now();
         let events = Arc::new(EventQueue::new());
@@ -348,7 +415,7 @@ impl RunHandle {
                 if let Some(t) = timeout {
                     if started.elapsed() > t {
                         timed_out = true;
-                        let _killed = ch.kill();
+                        kill_tree(ch);
                     }
                 }
                 drop(guard);
@@ -408,7 +475,7 @@ impl RunHandle {
         self.events.dropped()
     }
 
-    /// Kills the process.
+    /// Kills the process and the processes it started. Safe to call twice.
     pub fn stop(&mut self) {
         self.stop_requested.store(true, Ordering::SeqCst);
         let mut guard = match self.child.lock() {
@@ -416,13 +483,31 @@ impl RunHandle {
             Err(p) => p.into_inner(),
         };
         if let Some(c) = guard.as_mut() {
-            let _killed = c.kill();
+            kill_tree(c);
         }
     }
 
     /// True after the Finished event was received.
     pub fn is_finished(&self) -> bool {
         self.finished
+    }
+}
+
+impl Drop for RunHandle {
+    /// Kills the child if it is still running. Never blocks for more than ~1 s.
+    fn drop(&mut self) {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        let mut guard = match self.child.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let Some(child) = guard.as_mut() else {
+            return;
+        };
+        let already_exited = matches!(child.try_wait(), Ok(Some(_)));
+        if !already_exited {
+            kill_tree(child);
+        }
     }
 }
 
