@@ -108,6 +108,20 @@ fn replace_line_keeps_its_own_inputs_connected() {
 }
 
 #[test]
+fn add_line_preserves_existing_out_of_range_port_behavior() {
+    let mut m = fixture();
+    let line = Line {
+        id: LineId(3),
+        src: pr(2, 99),
+        points: vec![],
+        dst: Some(pr(3, 1)),
+        branches: vec![],
+        name: String::new(),
+    };
+    assert!(apply(&mut m, Command::AddLine { path: root(), line }).is_ok());
+}
+
+#[test]
 fn restore_items_rejects_a_line_to_a_missing_block() {
     let mut m = fixture();
     let ghost = Line {
@@ -151,6 +165,23 @@ fn restore_items_rejects_a_line_that_steals_a_connected_input() {
         },
     );
     assert_eq!(err, EditError::InputAlreadyConnected(pr(2, 1)));
+}
+
+#[test]
+fn restore_items_rejects_invalid_modified_lines_atomically() {
+    let mut m = fixture();
+    let mut invalid = line_of(&m, 1);
+    invalid.dst = Some(pr(99, 1));
+    let err = expect_rejected(
+        &mut m,
+        Command::RestoreItems {
+            path: root(),
+            blocks: vec![],
+            lines: vec![],
+            modified_lines: vec![invalid],
+        },
+    );
+    assert_eq!(err, EditError::BlockNotFound(BlockId(99)));
 }
 
 #[test]

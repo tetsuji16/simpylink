@@ -183,10 +183,18 @@ fn connected_inputs(sys: &System, except: Option<LineId>) -> BTreeSet<PortRef> {
 ///
 /// Blocks whose port counts cannot be computed (unknown type, invalid parameter) are
 /// left to `validate_model`, which reports them as its own diagnostics.
-fn check_endpoint(sys: &System, p: PortRef, is_output: bool) -> Result<(), EditError> {
+fn check_endpoint(
+    sys: &System,
+    p: PortRef,
+    is_output: bool,
+    check_port_range: bool,
+) -> Result<(), EditError> {
     let block = sys
         .block(p.block)
         .ok_or(EditError::BlockNotFound(p.block))?;
+    if !check_port_range {
+        return Ok(());
+    }
     let Ok(counts) = port_counts(block) else {
         return Ok(());
     };
@@ -220,10 +228,11 @@ fn check_line_endpoints(
     sys: &System,
     line: &Line,
     ignore: Option<LineId>,
+    check_port_range: bool,
 ) -> Result<(), EditError> {
-    check_endpoint(sys, line.src, true)?;
+    check_endpoint(sys, line.src, true, check_port_range)?;
     for d in line.destinations() {
-        check_endpoint(sys, d, false)?;
+        check_endpoint(sys, d, false, check_port_range)?;
     }
     check_inputs_free(sys, line, ignore)
 }
@@ -345,8 +354,16 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
             for b in &blocks {
                 probe.insert_block_sorted(b.clone());
             }
+            for l in &modified_lines {
+                if let Some(existing) = probe.line_mut(l.id) {
+                    *existing = l.clone();
+                }
+            }
+            for l in &modified_lines {
+                check_line_endpoints(&probe, l, Some(l.id), true)?;
+            }
             for l in &lines {
-                check_line_endpoints(&probe, l, None)?;
+                check_line_endpoints(&probe, l, None, true)?;
                 probe.insert_line_sorted(l.clone());
             }
             let inv = Command::DeleteItems {
@@ -481,18 +498,9 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
             if sys.line(line.id).is_some() {
                 return Err(EditError::DuplicateLine(line.id));
             }
-            // `AddLine` keeps the checks it has always had: an out-of-range port is a
-            // parameter problem that `validate_model` reports, so a line may be drawn
-            // before the block's port count is fixed (#197 §F).
-            if sys.block(line.src.block).is_none() {
-                return Err(EditError::BlockNotFound(line.src.block));
-            }
-            for d in line.destinations() {
-                if sys.block(d.block).is_none() {
-                    return Err(EditError::BlockNotFound(d.block));
-                }
-            }
-            check_inputs_free(sys, &line, None)?;
+            // Keep AddLine's historical behavior: port ranges are diagnosed by model
+            // validation, allowing users to connect blocks before fixing parameters.
+            check_line_endpoints(sys, &line, None, false)?;
             let id = line.id;
             sys.insert_line_sorted(line);
             bump_ids(model);
@@ -513,7 +521,7 @@ pub fn apply(model: &mut Model, cmd: Command) -> Result<Command, EditError> {
             if sys.line(line.id).is_none() {
                 return Err(EditError::LineNotFound(line.id));
             }
-            check_line_endpoints(sys, &line, Some(line.id))?;
+            check_line_endpoints(sys, &line, Some(line.id), true)?;
             let x = sys
                 .line_mut(line.id)
                 .ok_or(EditError::LineNotFound(line.id))?;
