@@ -90,6 +90,44 @@ fn xml_lossless() {
     assert!(parse_xml("t", b"").unwrap().root().is_none());
 }
 
+#[test]
+fn attribute_whitespace_survives_a_round_trip() {
+    // Attribute-value normalization would turn a literal \n, \r or \t into a space.
+    let mut doc = XmlDocument::default();
+    let mut e = XmlElement::new("P");
+    let value = "a\nb\tc\rd";
+    e.set_attr("Name", value);
+    doc.nodes.push(XmlNode::Element(e));
+    let bytes = write_xml(&doc);
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(text.contains("&#10;"), "{text}");
+    assert!(text.contains("&#13;"), "{text}");
+    assert!(text.contains("&#9;"), "{text}");
+    let back = parse_xml("p.xml", &bytes).unwrap();
+    assert_eq!(back.root().unwrap().attr("Name").as_deref(), Some(value));
+}
+
+#[test]
+fn unknown_entity_is_an_error_instead_of_an_empty_string() {
+    match parse_xml("p.xml", br#"<P Name="&foo;"/>"#) {
+        Err(SlxError::Xml { part, message }) => {
+            assert_eq!(part, "p.xml");
+            assert_eq!(message, "unknown entity '&foo;'");
+        }
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+    match parse_xml("p.xml", b"<P>&foo;</P>") {
+        Err(SlxError::Xml { message, .. }) => assert_eq!(message, "unknown entity '&foo;'"),
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+    // The entities XML defines still decode.
+    let back = parse_xml("p.xml", br#"<P Name="a &amp; b &#10; c"/>"#).unwrap();
+    assert_eq!(
+        back.root().unwrap().attr("Name").as_deref(),
+        Some("a & b \n c")
+    );
+}
+
 fn connections(m: &sim_core::model::Model) -> BTreeSet<(u32, u32, u32, u32)> {
     fn rec(s: &sim_core::model::System, out: &mut BTreeSet<(u32, u32, u32, u32)>) {
         for l in &s.lines {
@@ -600,6 +638,97 @@ fn r2026b_json_solver_settings_and_infinity_fallback() {
     assert!(!sim_core::validate::validate_model(&imp.model)
         .iter()
         .any(|d| d.code == "E_INVALID_CONFIG"));
+}
+
+#[test]
+fn a_broken_required_part_is_an_xml_error() {
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/blockdiagram.xml", b"<a><b></a>"),
+    ]);
+    match read_slx_bytes(&z, "m") {
+        Err(SlxError::Xml { part, .. }) => assert_eq!(part, "simulink/blockdiagram.xml"),
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+    // The root system part of a split model is required as well.
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        (
+            "simulink/systems/system_root.xml",
+            b"<System><Block></System>",
+        ),
+    ]);
+    match read_slx_bytes(&z, "m") {
+        Err(SlxError::Xml { part, .. }) => assert_eq!(part, "simulink/systems/system_root.xml"),
+        other => panic!("expected an XML error, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_broken_optional_part_becomes_a_warning() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Gain">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("metadata/coreProperties.xml", b"<a><b></a>"),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.blocks.len(), 1);
+    let hits: Vec<&String> = imp
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("metadata/coreProperties.xml"))
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", imp.report.warnings);
+    assert!(hits[0].contains("could not be parsed"), "{hits:?}");
+    assert!(hits[0].contains("ignored"), "{hits:?}");
+}
+
+#[test]
+fn a_broken_unread_simulink_xml_part_becomes_a_warning() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Gain">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+        ("simulink/unused/extra.xml", b"<a><b></a>"),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.blocks.len(), 1);
+    let hits: Vec<&String> = imp
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("simulink/unused/extra.xml"))
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", imp.report.warnings);
+    assert!(hits[0].contains("could not be parsed"), "{hits:?}");
+    assert!(hits[0].contains("ignored"), "{hits:?}");
+}
+
+#[test]
+fn a_position_that_is_not_a_number_is_reported_and_defaulted() {
+    let root = br#"<System><Block BlockType="Gain" Name="G" SID="1"><P Name="Position">[10, x, 30, 40]</P><P Name="Gain">2</P></Block></System>"#;
+    let z = make_zip(&[
+        ("[Content_Types].xml", CT),
+        ("simulink/systems/system_root.xml", root),
+    ]);
+    let imp = read_slx_bytes(&z, "m").unwrap();
+    assert_eq!(imp.model.root.blocks.len(), 1);
+    assert_eq!(
+        imp.model.root.blocks[0].position,
+        sim_core::geom::Rect::new(0.0, 0.0, 30.0, 30.0)
+    );
+    let hits: Vec<&String> = imp
+        .report
+        .warnings
+        .iter()
+        .filter(|w| w.contains("has a value that is not a number"))
+        .collect();
+    assert_eq!(hits.len(), 1, "{:?}", imp.report.warnings);
+    assert!(hits[0].contains("Position"), "{hits:?}");
+    assert!(hits[0].contains("'x'"), "{hits:?}");
+    assert!(hits[0].contains("default position"), "{hits:?}");
 }
 
 #[test]
