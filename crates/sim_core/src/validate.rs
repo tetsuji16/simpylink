@@ -226,14 +226,15 @@ fn check_port_numbers(sys: &System, path: &SystemPath, out: &mut Vec<Diagnostic>
         let mut seen = BTreeSet::new();
         for b in sys.blocks.iter().filter(|b| b.block_type == block_type) {
             let Some(n) = port_number(b) else { continue };
-            if !seen.insert(n) {
+            if seen.insert(n) {
+                numbers.push((n, b.sid));
+            } else {
                 out.push(Diagnostic::error(
                     E_DUPLICATE_PORT_NUMBER,
                     format!("port number {n} is used by more than one {block_type}"),
                     Location::block(path, b.sid),
                 ));
             }
-            numbers.push((n, b.sid));
         }
         numbers.sort_unstable();
         let count = numbers.len() as u32;

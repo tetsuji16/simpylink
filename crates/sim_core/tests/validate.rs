@@ -230,12 +230,12 @@ fn duplicate_port_numbers_are_reported() {
         "port number 1 is used by more than one Inport"
     );
     assert_eq!(duplicates[0].location.block, Some(BlockId(2)));
-    assert!(diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
+    assert!(!diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
 }
 
 #[test]
-fn duplicate_and_gap_are_reported_together() {
-    // There are three blocks, but their numbers are not the sequence 1,2,3.
+fn duplicate_does_not_imply_a_gap() {
+    // Duplicate entries must not shift the sorted indices into a false gap.
     let model = model_with_ports("Inport", &["1", "1", "2"]);
     let diagnostics = validate_model(&model);
     let duplicates = diagnostics
@@ -243,7 +243,7 @@ fn duplicate_and_gap_are_reported_together() {
         .filter(|d| d.code == E_DUPLICATE_PORT_NUMBER)
         .count();
     assert_eq!(duplicates, 1, "{diagnostics:?}");
-    assert!(diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
+    assert!(!diagnostics.iter().any(|d| d.code == E_PORT_NUMBER_GAP));
 }
 
 #[test]
